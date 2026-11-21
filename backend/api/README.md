@@ -1,6 +1,6 @@
 # JavaScript API modules
 
-Place one trusted CommonJS module per file in this folder, for example `ai.js` or `scraper.js`. Railway discovers these files at startup, but discovery does **not** publish or expose them.
+Place one trusted CommonJS module per file in this folder, for example `ai.js` or `scraper.js`. Railway discovers these files at startup and automatically registers/publishes them.
 
 Required exports:
 - `name`
@@ -11,7 +11,7 @@ Required exports:
 - `description`
 - `execute(req, res)`
 
-After adding/committing a `.js` module, redeploy Railway. Then sign in as the `owner`, open Admin Dashboard → Endpoint Management → Add endpoint, select the discovered file, choose its access plan, and register it. The backend immediately connects the selected module handler to its route and the frontend `/docs` catalog. Until registered, the module is not listed publicly and its route returns `ENDPOINT_NOT_REGISTERED`.
+After adding/committing a `.js` module, redeploy Railway. On startup, the backend automatically discovers it, inserts its endpoint metadata into `api_endpoints`, activates its handler, and publishes it in the frontend `/docs` catalog. No manual registration step is needed. Existing endpoint settings (name, category, access plan, and disabled state) are preserved. To change those settings, use the Admin Dashboard. New files must still be trusted code committed to the backend repository; the browser dashboard does not execute arbitrary uploaded JavaScript.
 
 Example module: `ai.js`. Do not upload arbitrary JavaScript through a public browser form; only trusted code committed and deployed to Railway is executable.
 

@@ -84,6 +84,22 @@ app.get('/health',async(_req,res)=>{
  });
 });
 
+async function syncDiscoveredModules(){
+ if(!supabase)return;
+ // Every trusted module deployed in backend/api is automatically published on startup.
+ // Existing rows are preserved so owner-edited names, categories, plans and disabled state remain intact.
+ for(const mod of availableModules){
+  const {data:existing,error:lookupError}=await supabase.from('api_endpoints').select('id').eq('path',mod.path).maybeSingle();
+  if(lookupError){console.error(`Could not check endpoint ${mod.path}:`,lookupError.message);continue;}
+  if(existing)continue;
+  const {error}=await supabase.from('api_endpoints').insert({
+   name:mod.name,path:mod.path,method:mod.method,category:mod.category||'Tools',
+   plan:mod.plan||'Both',description:mod.description||'',handler:mod.moduleFile,is_active:true
+  });
+  if(error)console.error(`Could not auto-register ${mod.moduleFile}:`,error.message);
+  else console.log(`Auto-registered API module: ${mod.method} ${mod.path}`);
+ }
+}
 async function refreshActiveModules(){
  activeModules.clear();
  if(!supabase)return;
@@ -239,7 +255,7 @@ app.get('/admin/audit',async(_req,res)=>{
  if(error)return res.status(500).json({success:false,error:error.message});res.json({success:true,result:data});
 });
 
-// Only owner-registered modules are executable. Unregistered files remain invisible and unreachable.
+// Only trusted modules committed to backend/api and synchronized into the owner's endpoint registry are executable.
 app.all('/api/v1/*',limiter,(req,res,next)=>{
   if(!activeModules.has(`${req.method}:${req.path}`))return res.status(404).json({success:false,code:'ENDPOINT_NOT_REGISTERED',message:'This endpoint has not been registered by the owner.'});
   next();
@@ -265,4 +281,4 @@ app.use((err:any,_req:Request,res:Response,_next:any)=>{
 });
 
 const port=Number(process.env.PORT||4000);
-void refreshActiveModules().finally(()=>app.listen(port,'0.0.0.0',()=>console.log(`Roxy Main API listening on 0.0.0.0:${port}; ${activeModules.size} endpoint module(s) registered.`)));
+void syncDiscoveredModules().then(refreshActiveModules).finally(()=>app.listen(port,'0.0.0.0',()=>console.log(`Roxy Main API listening on 0.0.0.0:${port}; ${activeModules.size} endpoint module(s) active.`)));
