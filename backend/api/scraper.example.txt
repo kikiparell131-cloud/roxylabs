@@ -1,0 +1,33 @@
+/**
+ * Copy this file to scraper.js to register a scraper endpoint.
+ * Only trusted source files committed and deployed to Railway are loaded.
+ * Do not accept arbitrary JavaScript uploads from the admin dashboard.
+ */
+module.exports = {
+  name: 'Page Scraper',
+  path: '/api/v1/scraper/page',
+  method: 'POST',
+  category: 'Scraper',
+  plan: 'Premium',
+  description: 'Example scraper module — implement an approved target/provider.',
+  async execute(req, res) {
+    const { url } = req.body || {};
+    if (typeof url !== 'string') {
+      return res.status(400).json({ success: false, code: 'URL_REQUIRED' });
+    }
+    let parsed;
+    try { parsed = new URL(url); } catch {
+      return res.status(400).json({ success: false, code: 'INVALID_URL' });
+    }
+    if (!['http:', 'https:'].includes(parsed.protocol)) {
+      return res.status(400).json({ success: false, code: 'UNSUPPORTED_PROTOCOL' });
+    }
+    // Before fetching, add SSRF defenses: block loopback/private/link-local IPs,
+    // restrict destinations to an allowlist, set timeouts and response-size limits.
+    return res.status(501).json({
+      success: false,
+      code: 'SCRAPER_NOT_CONFIGURED',
+      message: 'Implement an allowlisted scraper target in this module.'
+    });
+  }
+};

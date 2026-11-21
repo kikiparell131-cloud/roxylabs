@@ -1,3 +1,15 @@
-import {Request,Response,NextFunction} from 'express';import {supabase} from '../lib/supabase';
-export async function enforceQuota(req:Request,res:Response,next:NextFunction){if(!req.apiUser||!supabase)return res.status(503).json({success:false,code:'USAGE_SERVICE_UNAVAILABLE'});const day=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Jakarta',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());const {data}=await supabase.from('api_usage_daily').select('request_count').eq('user_id',req.apiUser.id).eq('usage_date',day).maybeSingle();const used=data?.request_count||0;if(used>=req.apiUser.daily_limit)return res.status(429).json({success:false,code:'DAILY_LIMIT_EXCEEDED',limit:req.apiUser.daily_limit,remaining:0,reset:'00:00 Asia/Jakarta'});res.locals.usageDay=day;next();}
-export async function writeUsage(req:Request,res:Response,started:number,endpoint:string){if(!supabase||!req.apiUser)return;const status=res.statusCode;const day=res.locals.usageDay||new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Jakarta',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());await supabase.from('api_usage_daily').upsert({user_id:req.apiUser.id,usage_date:day,request_count:1},{onConflict:'user_id,usage_date'});await supabase.from('api_logs').insert({user_id:req.apiUser.id,endpoint,method:req.method,status_code:status,response_time_ms:Date.now()-started,ip_address:req.ip});}
+import {Request,Response,NextFunction} from 'express';
+import {supabase} from '../lib/supabase';
+export async function enforceQuota(req:Request,res:Response,next:NextFunction){
+ if(!req.apiUser||!supabase)return res.status(503).json({success:false,code:'USAGE_SERVICE_UNAVAILABLE'});
+ const day=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Jakarta',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+ const {data,error}=await supabase.rpc('consume_api_quota',{p_user_id:req.apiUser.id,p_usage_date:day,p_daily_limit:req.apiUser.daily_limit});
+ if(error)return res.status(503).json({success:false,code:'QUOTA_SERVICE_UNAVAILABLE'});
+ if(!data?.allowed)return res.status(429).json({success:false,code:'DAILY_LIMIT_EXCEEDED',limit:req.apiUser.daily_limit,remaining:0,reset:'00:00 Asia/Jakarta'});
+ res.locals.usageDay=day;
+ next();
+}
+export async function writeUsage(req:Request,res:Response,started:number,endpoint:string){
+ if(!supabase||!req.apiUser)return;
+ await supabase.from('api_logs').insert({user_id:req.apiUser.id,endpoint,method:req.method,status_code:res.statusCode,response_time_ms:Date.now()-started,ip_address:req.ip});
+}

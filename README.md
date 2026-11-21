@@ -1,35 +1,100 @@
-# Roxy Main API v1.0.0
+# Roxy Main API — existing project, repaired
 
-Premium-style API platform starter: Next.js frontend (Vercel), Express API service (Railway), Supabase Auth/Postgres, Free/Premium quotas, API key middleware, endpoint documentation, live JSON tester, manual WhatsApp upgrade flow, API logs and admin endpoint metadata UI.
+This archive is the updated version of the project you uploaded. It preserves the existing `roxy-main-api` structure, Roxy assets, blue/lavender visual direction, and the original Vercel + Railway + Supabase deployment model.
 
-## Design direction
-Minimal premium anime SaaS: calm royal-blue/lavender palette, DM Sans typography, generous whitespace, restrained glass/gradient effects, responsive sidebar and Roxy character art. Chibi Roxy is used as the favicon asset (`frontend/public/roxy/favicon.jpg`).
+## What was repaired
+
+### Frontend
+- Dashboard metrics and seven-day chart now load from backend database queries; removed the hard-coded sample statistics.
+- Recent API requests are shown from real API logs.
+- Documentation fetches the registered backend endpoints and uses a redesigned responsive endpoint explorer + request playground.
+- Playground sends real requests and displays the actual HTTP status, latency, and JSON response.
+- Login and registration are connected to Supabase Auth.
+- Profile loads the real account, creates API keys (raw key is shown only once), and allows key revocation.
+- Admin UI uses the signed-in Supabase session and exposes live user, premium, endpoint metadata, and API-log management.
+
+### Backend
+- Verifies Supabase access tokens for user/admin dashboard routes.
+- Admin routes require `profiles.is_admin = true`; no browser-side admin token.
+- API keys are stored as SHA-256 hashes; raw keys are only returned at creation.
+- Premium expiry is checked server-side.
+- Daily quota reservation uses an atomic Postgres RPC to avoid parallel-request quota bypass.
+- API calls are logged with status and response time.
+- Endpoint modules can be written as individual JavaScript files in `backend/api/`, for example `backend/api/ai.js`. The service loads trusted `.js` modules from this folder on startup.
+- Admin-created endpoint entries are documentation metadata only. To make one executable, add a trusted module file and redeploy Railway. Arbitrary JavaScript uploaded from the public admin UI is deliberately not executed.
 
 ## Local setup
-1. Install Node.js 20+ and npm.
-2. Copy `.env.example` values into `frontend/.env.local` and `backend/.env` (do not commit real secrets).
-3. Create a Supabase project and run `supabase/schema.sql` in its SQL editor.
-4. In Supabase Auth, enable Email + Password. Configure email confirmation and redirect URLs for localhost and your Vercel domain.
-5. Install dependencies from the repository root: `npm install`.
-6. Run both services: `npm run dev`.
-7. Frontend: http://localhost:3000. Backend health: http://localhost:4000/health.
+
+1. Use Node.js 20+ and npm.
+2. Copy root `.env.example` values into `frontend/.env.local` and `backend/.env`.
+3. Create a Supabase project and run `supabase/schema.sql` in the Supabase SQL Editor.
+4. Enable Email + Password in Supabase Authentication. Configure the site URL and redirect URLs for localhost and your deployed Vercel domain.
+5. Install from the repository root: `npm install`.
+6. Start both services: `npm run dev`.
+7. Frontend: `http://localhost:3000`; backend health: `http://localhost:4000/health`.
+
+## Environment variables
+
+### Frontend — Vercel / `frontend/.env.local`
+- `NEXT_PUBLIC_API_URL` — public Railway backend URL, e.g. `https://your-api.up.railway.app`
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+- `NEXT_PUBLIC_ADMIN_WHATSAPP` — admin number in international digits, without `+`
+
+### Backend — Railway / `backend/.env`
+- `PORT` — Railway supplies this automatically; local default is `4000`
+- `CORS_ORIGINS` — comma-separated frontend origins
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY` — server-side only; never use a `NEXT_PUBLIC_` prefix
+
+## Make the first admin
+
+After registering your account, copy its user UUID from Supabase Authentication → Users, then run this SQL in Supabase SQL Editor:
+
+```sql
+update public.profiles
+set is_admin = true
+where id = 'YOUR_AUTH_USER_UUID';
+```
+
+The Admin Dashboard will then be authorized through your normal Supabase login session.
+
+## Add a JavaScript API module (Railway)
+
+Create `backend/api/ai.js`:
+
+```js
+module.exports = {
+  name: 'AI Chat',
+  path: '/api/v1/ai/chat',
+  method: 'POST',
+  category: 'AI Tools',
+  plan: 'Premium',
+  description: 'AI chat endpoint',
+  async execute(req, res) {
+    const { message } = req.body || {};
+    if (typeof message !== 'string' || !message.trim()) {
+      return res.status(400).json({ success: false, code: 'MESSAGE_REQUIRED' });
+    }
+
+    // Call your chosen provider here. Keep API secrets in Railway variables.
+    return res.json({ success: true, result: { message: 'Provider integration goes here' } });
+  }
+};
+```
+
+The backend loads `.js` modules in `backend/api/` when the Railway service starts. Give each module a unique `path`. Supported methods: GET, POST, PUT, PATCH, DELETE. Commit and redeploy to Railway after adding or changing code.
+
+A scraper starter is included as `backend/api/scraper.example.txt`; copy it to `backend/api/scraper.js` after implementing it. Scrapers must defend against SSRF (block loopback/private/link-local destinations), use destination allowlists, and enforce timeouts and response-size limits.
 
 ## Deploy
-- Vercel: set Root Directory to `frontend`; add `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `NEXT_PUBLIC_ADMIN_WHATSAPP`.
-- Railway: deploy `backend`; add `PORT`, `CORS_ORIGINS`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `ADMIN_BOOTSTRAP_TOKEN`.
-- Never expose `SUPABASE_SERVICE_ROLE_KEY` or `ADMIN_BOOTSTRAP_TOKEN` as `NEXT_PUBLIC_*` variables.
 
-## Important implementation notes before public launch
-This repository is a working UI/backend foundation, not a fully production-certified service. The login/register/profile pages are UI placeholders and must be connected to Supabase Auth before launch. Add server-side role-based admin authorization (use verified Supabase JWT + an admin role table/claim) to every admin route; the current bootstrap-token route is temporary scaffolding and must not be treated as final multi-admin auth. Replace the illustrative dashboard values with database queries. Add a Redis-backed distributed rate limiter for multi-instance Railway deployments. Quota increments should be implemented as an atomic Postgres RPC/transaction to prevent concurrent requests bypassing daily limits; the current middleware is a starter and needs that hardening. Add request-body schema validation, provider-specific handlers, timeout controls, log redaction/retention, and IP privacy policy. Do not store raw API keys in logs. The live tester calls the real backend and therefore requires a valid API key and configured handler.
+- **Vercel:** import the same repository, set Root Directory to `frontend`, and add the frontend environment variables.
+- **Railway:** deploy the same repository, set Root Directory to `backend`, and add the backend environment variables. The service health check is `/health`.
+- **Supabase:** apply `supabase/schema.sql` and promote your admin user as described above.
 
-## Endpoint management model
-The admin form stores endpoint metadata. A new endpoint becomes executable only after a trusted handler is added to `backend/src/handlers/registry.ts` and its route is registered. Never execute arbitrary JavaScript or SQL entered into the admin UI/database. This registry model keeps endpoint creation controlled and auditable.
+## Important
 
-## Current demo handlers
-- `POST /api/v1/ai/chat`: safe echo demonstration, premium-gated (not a real LLM integration).
-- `POST /api/v1/text/encode`: Base64 text encoding.
-- `POST /api/v1/tools/qr`: returns 501 until a QR provider/implementation is connected.
-- `POST /api/v1/image/enhance`: returns 501 until an image provider is connected.
-
-## Manual Premium activation
-The Pricing page opens WhatsApp using `NEXT_PUBLIC_ADMIN_WHATSAPP`. Admin activation UI and server-side subscription mutation/audit workflow still need to be completed with verified admin auth. No payment gateway is included by design.
+- Payment gateway is intentionally not included. Premium activation remains manual through the WhatsApp link on Pricing; an admin can grant or revoke Premium in Admin Dashboard.
+- The AI, QR, and image-provider integrations still need their real provider logic. They return explicit `501` configuration responses rather than pretending to process a request.
+- This is a repaired application foundation, not a completed security audit. Before public launch, add monitoring/retention policies, provider timeouts, request validation per endpoint, and Redis-backed distributed rate limiting if running multiple Railway replicas.
