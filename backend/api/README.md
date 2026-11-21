@@ -29,14 +29,21 @@ Searches YouTube by song title or artist and returns JSON metadata (title, video
 
 ## FotoLive Converter (`fotolive.js`)
 
-POST `/api/v1/fotolive` converts an uploaded video into a paired-media JSON result: a JPEG extracted from the first video frame plus the original motion video. The maximum upload size is **5 MB**.
+`POST /api/v1/fotolive` accepts one video upload (`multipart/form-data`, field `video`) up to **5 MiB**.
 
-Send `multipart/form-data` with the file field named `video` and your API key in `x-api-key`:
+It returns two usable forms:
+
+- `result.gallery`: a single Android Motion Photo 1.0 `.MP.jpg` file containing a JPEG still, appended H.264/AAC MP4, and XMP container metadata. Use `gallery.data` (Base64) or `gallery.dataUrl` to save the moving photo to a compatible Android gallery/photo app.
+- `result.whatsapp`: separate JPEG and MP4 components plus Baileys pairing values (`imagePairedMediaType: 5`, `videoPairedMediaType: 6`, `associationType: 12`). A WhatsApp bot uploads these components through Baileys and relays the paired messages; the API itself does not send WhatsApp messages.
+
+The `result.image` is only a still preview. Download `result.gallery`, not `result.image`, when you want the moving Motion Photo file.
+
+Example:
 
 ```bash
-curl -X POST "https://YOUR-RAILWAY-DOMAIN/api/v1/fotolive" \\
-  -H "x-api-key: YOUR_API_KEY" \\
-  -F "video=@./clip.mp4"
+curl -X POST "https://YOUR-RAILWAY-DOMAIN/api/v1/fotolive" \
+  -H "x-api-key: YOUR_API_KEY" \
+  -F "video=@clip.mp4"
 ```
 
-The response contains `result.image.dataUrl`, `result.motion.dataUrl`, and `result.pairing` metadata. Both media components are Base64-encoded in the JSON response. In the Roxy API Docs tester, choose a video file and execute the request; the page previews the extracted JPG and provides exactly one download action: **Download Foto**. That button downloads only `result.image` as a `.jpg` file; it does not download the source video or a ZIP. This API creates a paired-media payload; it does not send WhatsApp messages or create a proprietary native Live Photo container. Deploy both the backend and frontend after updating; startup discovery automatically registers the module in the endpoint registry.
+The upload limit applies to the original video. Output size can differ because the video is normalized to H.264/AAC MP4.

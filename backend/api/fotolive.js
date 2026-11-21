@@ -1,9 +1,9 @@
 /**
- * Roxy Main API — FotoLive converter.
- * Accepts one video upload (maximum 5 MiB), extracts its first frame as a JPEG,
- * and returns the still image + original motion video as a paired-media payload.
- * This is an API representation of the WhatsApp Live Photo pair; it does not
- * send a WhatsApp message or create a proprietary device Live Photo container.
+ * Roxy Main API — dual-output FotoLive converter.
+ *
+ * Output A: Android Motion Photo 1.0 single-file JPEG + appended MP4 + XMP.
+ * Output B: separate image/video components and Baileys-compatible pairing
+ * metadata for a WhatsApp bot to upload and relay as a motion-photo pair.
  */
 const fs = require('node:fs');
 const os = require('node:os');
@@ -18,25 +18,72 @@ const upload = multer({
   limits: { fileSize: MAX_VIDEO_BYTES, files: 1, fields: 0 }
 });
 
-function extractFirstFrame(inputPath, outputPath) {
+function runFFmpeg(args) {
   return new Promise((resolve, reject) => {
     if (!ffmpegPath) return reject(new Error('FFMPEG_NOT_AVAILABLE'));
-    const child = spawn(ffmpegPath, [
-      '-hide_banner', '-loglevel', 'error', '-y',
-      '-i', inputPath,
-      '-frames:v', '1',
-      '-vf', 'scale=1280:1280:force_original_aspect_ratio=decrease',
-      '-q:v', '3',
-      outputPath
-    ], { windowsHide: true });
+    const child = spawn(ffmpegPath, args, { windowsHide: true });
     let stderr = '';
     child.stderr.on('data', chunk => { stderr += chunk.toString(); });
     child.once('error', reject);
     child.once('close', code => {
-      if (code === 0 && fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) return resolve();
-      reject(new Error(`FFMPEG_FAILED:${stderr.slice(-1200)}`));
+      if (code === 0) return resolve();
+      reject(new Error(`FFMPEG_FAILED:${stderr.slice(-1600)}`));
     });
   });
+}
+
+// Normalize uploads (including MOV/WebM) to broadly compatible H.264/AAC MP4.
+async function normalizeVideo(inputPath, mp4Path) {
+  await runFFmpeg([
+    '-hide_banner', '-loglevel', 'error', '-y', '-i', inputPath,
+    '-map', '0:v:0', '-map', '0:a?',
+    '-vf', 'scale=1280:1280:force_original_aspect_ratio=decrease:force_divisible_by=2',
+    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '25', '-pix_fmt', 'yuv420p',
+    '-c:a', 'aac', '-b:a', '96k', '-movflags', '+faststart', '-f', 'mp4', mp4Path
+  ]);
+  if (!fs.existsSync(mp4Path) || fs.statSync(mp4Path).size < 16) {
+    throw new Error('VIDEO_NORMALIZATION_FAILED');
+  }
+}
+
+async function extractFirstFrame(mp4Path, jpgPath) {
+  await runFFmpeg([
+    '-hide_banner', '-loglevel', 'error', '-y', '-i', mp4Path,
+    '-frames:v', '1', '-q:v', '2', '-f', 'image2', jpgPath
+  ]);
+  if (!fs.existsSync(jpgPath) || fs.statSync(jpgPath).size < 4) {
+    throw new Error('THUMBNAIL_FAILED');
+  }
+}
+
+// Build an Android Motion Photo 1.0 XMP packet and inject it as a JPEG APP1.
+// The primary item length is intentionally 0 (allowed by the spec); the MP4
+// item length points to the appended video at the end of the container.
+function makeMotionPhoto(jpeg, mp4) {
+  if (jpeg[0] !== 0xff || jpeg[1] !== 0xd8) throw new Error('INVALID_JPEG_FRAME');
+  const xmp = `<?xpacket begin="\uFEFF" id="W5M0MpCehiHzreSzNTczkc9d"?>` +
+    `<x:xmpmeta xmlns:x="adobe:ns:meta/">` +
+    `<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">` +
+    `<rdf:Description rdf:about="" xmlns:Camera="http://ns.google.com/photos/1.0/camera/" ` +
+    `xmlns:Container="http://ns.google.com/photos/1.0/container/" ` +
+    `xmlns:Item="http://ns.google.com/photos/1.0/container/item/" ` +
+    `Camera:MotionPhoto="1" Camera:MotionPhotoVersion="1" ` +
+    `Camera:MotionPhotoPresentationTimestampUs="-1">` +
+    `<Container:Directory><rdf:Seq>` +
+    `<rdf:li rdf:parseType="Resource" Item:Mime="image/jpeg" Item:Semantic="Primary" Item:Length="0"/>` +
+    `<rdf:li rdf:parseType="Resource" Item:Mime="video/mp4" Item:Semantic="MotionPhoto" Item:Length="${mp4.length}"/>` +
+    `</rdf:Seq></Container:Directory></rdf:Description></rdf:RDF></x:xmpmeta>` +
+    `<?xpacket end="w"?>`;
+  const xmpHeader = Buffer.from('http://ns.adobe.com/xap/1.0/\0', 'ascii');
+  const xml = Buffer.from(xmp, 'utf8');
+  const payload = Buffer.concat([xmpHeader, xml]);
+  const segmentLength = payload.length + 2;
+  if (segmentLength > 0xffff) throw new Error('XMP_TOO_LARGE');
+  const app1 = Buffer.alloc(4);
+  app1[0] = 0xff; app1[1] = 0xe1;
+  app1.writeUInt16BE(segmentLength, 2);
+  const jpegWithXmp = Buffer.concat([jpeg.subarray(0, 2), app1, payload, jpeg.subarray(2)]);
+  return Buffer.concat([jpegWithXmp, mp4]);
 }
 
 module.exports = {
@@ -45,7 +92,7 @@ module.exports = {
   method: 'POST',
   category: 'Media Tools',
   plan: 'Both',
-  description: 'Upload a video up to 5 MB and convert it into a paired still-image + motion-video FotoLive payload.',
+  description: 'Upload a video up to 5 MB and create an Android Motion Photo file plus WhatsApp paired-media components.',
   async execute(req, res) {
     upload.single('video')(req, res, async error => {
       if (error) {
@@ -65,30 +112,62 @@ module.exports = {
       }
 
       const id = `roxy_fotolive_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      const inputPath = path.join(os.tmpdir(), `${id}.video`);
+      const inputPath = path.join(os.tmpdir(), `${id}.input`);
+      const mp4Path = path.join(os.tmpdir(), `${id}.mp4`);
       const imagePath = path.join(os.tmpdir(), `${id}.jpg`);
       try {
         fs.writeFileSync(inputPath, file.buffer, { flag: 'wx' });
-        await extractFirstFrame(inputPath, imagePath);
+        await normalizeVideo(inputPath, mp4Path);
+        await extractFirstFrame(mp4Path, imagePath);
+
         const image = fs.readFileSync(imagePath);
-        const videoMime = file.mimetype.toLowerCase();
+        const motion = fs.readFileSync(mp4Path);
+        const motionPhoto = makeMotionPhoto(image, motion);
+        const imageBase64 = image.toString('base64');
+        const motionBase64 = motion.toString('base64');
+        const motionPhotoBase64 = motionPhoto.toString('base64');
+        const downloadName = `${id}.MP.jpg`;
+
         return res.json({
           success: true,
           source: 'Roxy FotoLive Converter',
           result: {
             id,
-            format: 'fotolive-pair',
-            image: { mimeType: 'image/jpeg', encoding: 'base64', data: image.toString('base64'), dataUrl: `data:image/jpeg;base64,${image.toString('base64')}` },
-            motion: { mimeType: videoMime, encoding: 'base64', data: file.buffer.toString('base64'), dataUrl: `data:${videoMime};base64,${file.buffer.toString('base64')}` },
-            pairing: {
+            format: 'android-motion-photo-1.0',
+            gallery: {
+              fileName: downloadName,
+              mimeType: 'image/jpeg',
+              extension: '.MP.jpg',
+              encoding: 'base64',
+              data: motionPhotoBase64,
+              dataUrl: `data:image/jpeg;base64,${motionPhotoBase64}`,
+              sizeBytes: motionPhoto.length,
+              contains: ['JPEG still image', 'H.264/AAC MP4 motion video', 'Android Motion Photo XMP metadata']
+            },
+            image: {
+              mimeType: 'image/jpeg', encoding: 'base64', data: imageBase64,
+              dataUrl: `data:image/jpeg;base64,${imageBase64}`
+            },
+            motion: {
+              mimeType: 'video/mp4', encoding: 'base64', data: motionBase64,
+              dataUrl: `data:video/mp4;base64,${motionBase64}`
+            },
+            whatsapp: {
+              format: 'baileys-motion-photo-pair',
+              image: { mimeType: 'image/jpeg', encoding: 'base64', data: imageBase64 },
+              video: { mimeType: 'video/mp4', encoding: 'base64', data: motionBase64 },
               imagePairedMediaType: 5,
               videoPairedMediaType: 6,
               associationType: 12,
-              description: 'Still image and motion video are returned as a paired-media payload.'
+              note: 'Bot must upload both components with Baileys and relay the paired messages; this API does not send WhatsApp messages.'
             },
-            original: { fileName: path.basename(file.originalname || 'video'), sizeBytes: file.size, sizeLimitBytes: MAX_VIDEO_BYTES }
+            original: {
+              fileName: path.basename(file.originalname || 'video'),
+              sizeBytes: file.size,
+              sizeLimitBytes: MAX_VIDEO_BYTES
+            }
           },
-          note: 'This endpoint returns the two media components and pairing metadata. It does not send WhatsApp messages or generate a proprietary native Live Photo file.'
+          note: 'gallery.data is one Android Motion Photo file. whatsapp contains separate media components and pairing metadata for a Baileys bot.'
         });
       } catch (err) {
         console.error('[FOTOLIVE]', err);
@@ -99,7 +178,7 @@ module.exports = {
           message: ffmpegMissing ? 'FFmpeg is unavailable on this server.' : 'Could not read or convert this video. Try a valid supported video file.'
         });
       } finally {
-        for (const temp of [inputPath, imagePath]) {
+        for (const temp of [inputPath, mp4Path, imagePath]) {
           try { if (fs.existsSync(temp)) fs.unlinkSync(temp); } catch {}
         }
       }
