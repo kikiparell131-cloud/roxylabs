@@ -20,3 +20,9 @@ Example module: `ai.js`. Do not upload arbitrary JavaScript through a public bro
 GET `/api/v1/pinterest/search?q=elaina&limit=5&type=image`
 
 Query parameters: `q` (required keyword), `limit` (1–30, default 10), and `type` (`all`, `image`, or `video`). The module extracts publicly exposed results from Pinterest's search page; Pinterest may rate-limit requests or change its markup, so results are not guaranteed. Media links can expire. Use only content you own or have permission to use.
+
+## YouTube Play Search (`play.js`)
+
+GET `/api/v1/youtube/play?q=chase+atlantic&limit=5`
+
+Searches YouTube by song title or artist and returns JSON metadata (title, video URL, duration, views, author, thumbnail, and upload age). `q` is required; `limit` is 1–10 and defaults to 5. This endpoint returns official watch URLs, not an audio file.
