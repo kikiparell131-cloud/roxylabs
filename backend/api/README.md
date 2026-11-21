@@ -14,3 +14,9 @@ Required exports:
 After adding/committing a `.js` module, redeploy Railway. Then sign in as the `owner`, open Admin Dashboard → Endpoint Management → Add endpoint, select the discovered file, choose its access plan, and register it. The backend immediately connects the selected module handler to its route and the frontend `/docs` catalog. Until registered, the module is not listed publicly and its route returns `ENDPOINT_NOT_REGISTERED`.
 
 Example module: `ai.js`. Do not upload arbitrary JavaScript through a public browser form; only trusted code committed and deployed to Railway is executable.
+
+## Pinterest Search (`pinsearch.js`)
+
+GET `/api/v1/pinterest/search?q=elaina&limit=5&type=image`
+
+Query parameters: `q` (required keyword), `limit` (1–30, default 10), and `type` (`all`, `image`, or `video`). The module extracts publicly exposed results from Pinterest's search page; Pinterest may rate-limit requests or change its markup, so results are not guaranteed. Media links can expire. Use only content you own or have permission to use.
