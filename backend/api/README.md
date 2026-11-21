@@ -26,3 +26,17 @@ Query parameters: `q` (required keyword), `limit` (1–30, default 10), and `typ
 GET `/api/v1/youtube/play?q=chase+atlantic&limit=5`
 
 Searches YouTube by song title or artist and returns JSON metadata (title, video URL, duration, views, author, thumbnail, and upload age). `q` is required; `limit` is 1–10 and defaults to 5. This endpoint returns official watch URLs, not an audio file.
+
+## FotoLive Converter (`fotolive.js`)
+
+POST `/api/v1/fotolive` converts an uploaded video into a paired-media JSON result: a JPEG extracted from the first video frame plus the original motion video. The maximum upload size is **5 MB**.
+
+Send `multipart/form-data` with the file field named `video` and your API key in `x-api-key`:
+
+```bash
+curl -X POST "https://YOUR-RAILWAY-DOMAIN/api/v1/fotolive" \\
+  -H "x-api-key: YOUR_API_KEY" \\
+  -F "video=@./clip.mp4"
+```
+
+The response contains `result.image.dataUrl`, `result.motion.dataUrl`, and `result.pairing` metadata. Both media components are Base64-encoded in the JSON response. This API creates a paired-media payload; it does not send WhatsApp messages or create a proprietary native Live Photo container. Deploy the backend after adding the module; startup discovery automatically registers it in the endpoint registry.
