@@ -27,6 +27,12 @@ import {supabase} from './lib/supabase';
 import {requireSession,requireAdmin} from './middleware/session';
 
 const app=express();
+// Stamp every JSON API response with the required service identity.
+app.use((_req,res,next)=>{
+ const originalJson=res.json.bind(res);
+ res.json=(body:any)=>originalJson(body&&typeof body==='object'&&!Array.isArray(body)?{...body,api:'roxylabs'}:{api:'roxylabs',result:body});
+ next();
+});
 app.set('trust proxy',1);
 app.use(helmet({crossOriginResourcePolicy:{policy:'cross-origin'}}));
 
@@ -196,13 +202,15 @@ app.get('/admin/endpoints',async(_req,res)=>{
  res.json({success:true,result});
 });
 app.post('/admin/endpoints',async(req,res)=>{
- const {handler,plan,is_active=true}=req.body||{};
+ const {handler,plan,is_active=true,category,name}=req.body||{};
  const mod=availableModules.find(x=>x.moduleFile===handler);
  if(!mod)return res.status(400).json({success:false,code:'MODULE_NOT_FOUND',message:'Choose a JavaScript module that exists in backend/api on Railway.'});
  if(!['Free','Premium','Both'].includes(plan))return res.status(400).json({success:false,error:'Access plan must be Free, Premium or Both.'});
  const {count}=await supabase!.from('api_endpoints').select('id',{count:'exact',head:true}).eq('handler',handler);
  if((count||0)>0)return res.status(409).json({success:false,code:'MODULE_ALREADY_REGISTERED',message:'This backend module has already been registered.'});
- const payload={name:mod.name,path:mod.path,method:mod.method,category:mod.category,plan,description:mod.description||'',handler:mod.moduleFile,is_active:!!is_active};
+ const cleanCategory=typeof category==='string'&&category.trim()?category.trim().slice(0,40):mod.category;
+ const cleanName=typeof name==='string'&&name.trim()?name.trim().slice(0,60):mod.name;
+ const payload={name:cleanName,path:mod.path,method:mod.method,category:cleanCategory,plan,description:mod.description||'',handler:mod.moduleFile,is_active:!!is_active};
  const {data,error}=await supabase!.from('api_endpoints').insert(payload).select().single();
  if(error)return res.status(400).json({success:false,error:error.message});
  if(data.is_active)activeModules.set(`${mod.method}:${mod.path}`,{endpoint:mod,config:data});

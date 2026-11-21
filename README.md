@@ -117,3 +117,10 @@ Run `supabase/role_migration.sql` once on an existing database, replace `YOUR_OW
 The API catalog intentionally starts empty. JavaScript files placed in `backend/api/*.js` are discovered as available modules but are not public or executable until the owner opens Admin Dashboard → Endpoint Management → Add endpoint and registers the file. Registration writes its module reference to `api_endpoints`, activates its real backend handler immediately, and makes it appear in `/docs`. If a file is changed or added, redeploy the Railway backend; then register it in the web dashboard. Deleting/disabling the registration removes it from public docs and disables its route.
 
 Owner API keys bypass daily quota and can call Premium endpoints. Owner status is still required for all admin dashboard operations.
+
+## Endpoint categories, response identity, and Pinterest PinDL
+- When registering a module in Admin → Endpoint Management, set its short **Endpoint label** and **Category / menu group**. For example, use `Download` as the category and `TikTokDL` / `PinDL` as the endpoint labels. API Docs groups endpoints by category.
+- API JSON responses include the required top-level `api: "roxylabs"` identity.
+- API Docs has a **Copy JSON** action for response payloads.
+- Added `backend/api/pindl.js` for public Pinterest pin page metadata and available image/video URLs. Register it in the owner dashboard after deploying the backend. Pinterest may restrict media metadata; this module does not guarantee a downloadable original file for every pin.
+- Redeploy backend and frontend after pushing the changes. Existing registered endpoint rows keep their current category/name; adjust them in Supabase or re-register after deleting the old row if you want to rename existing entries.
