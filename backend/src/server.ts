@@ -8,19 +8,21 @@ import rateLimit from 'express-rate-limit';
 import {createHash,randomBytes} from 'node:crypto';
 import {authenticateApiKey} from './middleware/apiKey';
 import {enforceQuota,writeUsage} from './middleware/usage';
-import {registry,RegisteredEndpoint} from './modules/registry';
+type RegisteredEndpoint={name:string;path:string;method:'GET'|'POST'|'PUT'|'PATCH'|'DELETE';category:string;plan:'Free'|'Premium'|'Both';description:string;handler:(req:Request,res:Response)=>unknown|Promise<unknown>;moduleFile:string};
 declare const require:(id:string)=>any;
 function loadJavaScriptModules():RegisteredEndpoint[]{
  const dir=path.resolve(process.cwd(),'api');
- try{return readdirSync(dir).filter(file=>file.endsWith('.js')).map(file=>{
+ try{return readdirSync(dir).filter(file=>file.endsWith('.js')&&!file.startsWith('.')).map(file=>{
   const loaded=require(path.join(dir,file));
   const mod=loaded.default||loaded;
-  if(!mod.name||!mod.path||!['GET','POST','PUT','PATCH','DELETE'].includes(mod.method)||typeof mod.execute!=='function')throw new Error(`Invalid API module: ${file}`);
-  return {...mod,handler:mod.execute} as RegisteredEndpoint;
+  if(!mod.name||!/^\/api\/v1\/[a-z0-9/_-]+$/.test(mod.path||'')||!['GET','POST','PUT','PATCH','DELETE'].includes(mod.method)||typeof mod.execute!=='function')throw new Error(`Invalid API module: ${file}`);
+  return {...mod,handler:mod.execute,moduleFile:file} as RegisteredEndpoint;
  });}catch(error:any){if(error?.code==='ENOENT')return [];throw error;}
 }
-const allModules=[...registry,...loadJavaScriptModules()];
-if(new Set(allModules.map(x=>x.path)).size!==allModules.length)throw new Error('Duplicate API module path detected.');
+// Files in backend/api are only candidates. An owner must register each one in Admin before it becomes public.
+const availableModules=loadJavaScriptModules();
+if(new Set(availableModules.map(x=>x.path)).size!==availableModules.length)throw new Error('Two backend/api modules cannot share the same API path.');
+const activeModules=new Map<string,{endpoint:RegisteredEndpoint;config:any}>();
 import {supabase} from './lib/supabase';
 import {requireSession,requireAdmin} from './middleware/session';
 
@@ -76,25 +78,27 @@ app.get('/health',async(_req,res)=>{
  });
 });
 
-app.get('/api/v1/endpoints',async(_req,res)=>{
- const base=allModules.map(({handler,...meta})=>({...meta,source:'code'}));
- const {data}=supabase?await supabase.from('api_endpoints').select('id,name,path,method,category,plan,description,handler,is_active').eq('is_active',true):{data:[]};
- const known=new Set(base.map(x=>x.path));
- res.json({success:true,result:[...base,...(data||[]).filter(x=>!known.has(x.path)).map(x=>({...x,source:'metadata'}))]});
-});
-
-for(const ep of allModules){
- const method=ep.method.toLowerCase() as 'get'|'post'|'put'|'patch'|'delete';
- (app as any)[method](ep.path,limiter,authenticateApiKey,enforceQuota,async(req:Request,res:Response)=>{
-   const started=Date.now();
-   if(ep.plan==='Premium'&&req.apiUser?.plan!=='premium'){
-     res.status(403);await writeUsage(req,res,started,ep.path);
-     return res.json({success:false,code:'PREMIUM_REQUIRED',message:'This endpoint requires a Premium subscription.'});
-   }
-   try{await ep.handler(req,res)}catch(err){console.error('endpoint failure',ep.path,err);if(!res.headersSent)res.status(500).json({success:false,code:'INTERNAL_ERROR'});}
-   finally{await writeUsage(req,res,started,ep.path).catch(e=>console.error('log write failed',e));}
- });
+async function refreshActiveModules(){
+ activeModules.clear();
+ if(!supabase)return;
+ const {data,error}=await supabase.from('api_endpoints').select('*').eq('is_active',true);
+ if(error){console.error('Could not load registered endpoint metadata:',error.message);return;}
+ for(const config of data||[]){
+  const mod=availableModules.find(x=>x.moduleFile===config.handler);
+  if(!mod||mod.path!==config.path||mod.method!==config.method){
+   console.warn(`Endpoint ${config.name} is inactive at runtime: missing or mismatched backend/api/${config.handler}`);
+   continue;
+  }
+  activeModules.set(`${config.method}:${config.path}`,{endpoint:mod,config});
+ }
 }
+app.get('/api/v1/endpoints',async(_req,res)=>{
+ if(!supabase)return res.status(503).json({success:false,code:'DATABASE_NOT_CONFIGURED'});
+ const {data,error}=await supabase.from('api_endpoints').select('id,name,path,method,category,plan,description,handler,is_active,created_at').eq('is_active',true).order('created_at',{ascending:false});
+ if(error)return res.status(503).json({success:false,code:'ENDPOINT_REGISTRY_UNAVAILABLE',message:error.message});
+ const result=(data||[]).filter(row=>activeModules.has(`${row.method}:${row.path}`)).map(row=>({...row,source:'code'}));
+ res.json({success:true,result});
+});
 
 // User workspace APIs
 app.get('/dashboard/overview',requireSession,async(req,res)=>{
@@ -107,7 +111,7 @@ app.get('/dashboard/overview',requireSession,async(req,res)=>{
   supabase.from('api_logs').select('id',{count:'exact',head:true}).eq('user_id',id).gte('created_at',month.toISOString()),
   supabase.from('api_logs').select('created_at,status_code').eq('user_id',id).gte('created_at',new Date(Date.now()-6*86400000).toISOString()),
   supabase.from('api_keys').select('id').eq('user_id',id).eq('is_active',true),
-  supabase.from('profiles').select('plan,custom_daily_limit,premium_expires_at').eq('id',id).maybeSingle(),
+  supabase.from('profiles').select('plan,role,custom_daily_limit,premium_expires_at').eq('id',id).maybeSingle(),
   supabase.from('api_usage_daily').select('request_count').eq('user_id',id).eq('usage_date',usageDay).maybeSingle()
  ]);
  const queryError=results.find(x=>x.error)?.error;
@@ -117,10 +121,10 @@ app.get('/dashboard/overview',requireSession,async(req,res)=>{
  }
  const [{data:todayLogs},{count:monthCount},{data:weekLogs},{data:keys},{data:profile},{data:usage}]=results;
  if(!profile)return res.status(404).json({success:false,code:'PROFILE_NOT_FOUND',message:'No profile row exists for this account. Run the Supabase schema trigger or create the profile row.'});
- const rows=todayLogs||[];const limit=profile.custom_daily_limit||(profile.plan==='premium'?1000:200);
+ const rows=todayLogs||[];const owner=profile.role==='owner';const limit=owner?0:(profile.custom_daily_limit||(profile.plan==='premium'?1000:200));
  const success=rows.filter(x=>x.status_code<400).length;
  const days=Array.from({length:7},(_,i)=>{const d=new Date(Date.now()-(6-i)*86400000);const date=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Jakarta',year:'numeric',month:'2-digit',day:'2-digit'}).format(d);return {date,count:(weekLogs||[]).filter(x=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Jakarta',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(x.created_at))===date).length};});
- res.json({success:true,result:{requestsToday:rows.length,requestsMonth:monthCount||0,remainingQuota:Math.max(0,limit-(usage?.request_count||0)),dailyLimit:limit,successRate:rows.length?Number((success/rows.length*100).toFixed(1)):0,activeKeys:keys?.length||0,plan:profile?.plan||'free',activity:days}});
+ res.json({success:true,result:{requestsToday:rows.length,requestsMonth:monthCount||0,remainingQuota:owner?null:Math.max(0,limit-(usage?.request_count||0)),dailyLimit:owner?null:limit,successRate:rows.length?Number((success/rows.length*100).toFixed(1)):0,activeKeys:keys?.length||0,plan:profile?.plan||'free',role:profile?.role||'free',activity:days}});
 });
 app.get('/dashboard/logs',requireSession,async(req,res)=>{
  const limit=Math.min(Math.max(Number(req.query.limit)||30,1),100);
@@ -144,7 +148,7 @@ app.delete('/dashboard/keys/:id',requireSession,async(req,res)=>{
  if(error)return res.status(400).json({success:false,error:error.message});res.json({success:true});
 });
 app.get('/dashboard/profile',requireSession,async(req,res)=>{
- const {data,error}=await supabase!.from('profiles').select('id,username,plan,status,premium_expires_at,custom_daily_limit,created_at').eq('id',req.sessionUser!.id).single();
+ const {data,error}=await supabase!.from('profiles').select('id,username,plan,role,status,premium_expires_at,custom_daily_limit,created_at').eq('id',req.sessionUser!.id).single();
  if(error)return res.status(500).json({success:false,error:error.message});res.json({success:true,result:{...data,email:req.sessionUser!.email}});
 });
 
@@ -153,20 +157,23 @@ app.use('/admin',requireSession,requireAdmin);
 app.get('/admin/overview',async(_req,res)=>{
  const [users,premium,logs,errors]=await Promise.all([
   supabase!.from('profiles').select('id',{count:'exact',head:true}),
-  supabase!.from('profiles').select('id',{count:'exact',head:true}).eq('plan','premium'),
+  supabase!.from('profiles').select('id',{count:'exact',head:true}).eq('role','premium'),
   supabase!.from('api_logs').select('id',{count:'exact',head:true}).gte('created_at',new Date(new Date().setHours(0,0,0,0)).toISOString()),
   supabase!.from('api_logs').select('id',{count:'exact',head:true}).gte('created_at',new Date(Date.now()-86400000).toISOString()).gte('status_code',400)
  ]);
  res.json({success:true,result:{users:users.count||0,premium:premium.count||0,requestsToday:logs.count||0,errorsToday:errors.count||0}});
 });
 app.get('/admin/users',async(req,res)=>{
- const q=String(req.query.q||'');let query=supabase!.from('profiles').select('id,username,plan,status,premium_expires_at,created_at').order('created_at',{ascending:false}).limit(100);
+ const q=String(req.query.q||'');let query=supabase!.from('profiles').select('id,username,plan,role,status,premium_expires_at,created_at').order('created_at',{ascending:false}).limit(100);
  if(q)query=query.ilike('username',`%${q}%`);
  const {data,error}=await query;if(error)return res.status(500).json({success:false,error:error.message});res.json({success:true,result:data});
 });
 app.patch('/admin/users/:id/premium',async(req,res)=>{
  const {active,expiresAt}=req.body||{};if(typeof active!=='boolean')return res.status(400).json({success:false,error:'active must be boolean'});
- const {error}=await supabase!.from('profiles').update({plan:active?'premium':'free',premium_expires_at:active?(expiresAt||null):null}).eq('id',req.params.id);
+ const {data:target}=await supabase!.from('profiles').select('role').eq('id',req.params.id).maybeSingle();
+ if(!target)return res.status(404).json({success:false,code:'USER_NOT_FOUND'});
+ if(target.role==='owner')return res.status(403).json({success:false,code:'OWNER_ROLE_PROTECTED',message:'Owner role cannot be changed from Premium management.'});
+ const {error}=await supabase!.from('profiles').update({plan:active?'premium':'free',role:active?'premium':'free',premium_expires_at:active?(expiresAt||null):null}).eq('id',req.params.id);
  if(error)return res.status(400).json({success:false,error:error.message});
  await supabase!.from('admin_audit_logs').insert({admin_id:req.sessionUser!.id,target_user_id:req.params.id,action:active?'premium_granted':'premium_revoked',metadata:{expiresAt:expiresAt||null}});
  res.json({success:true});
@@ -176,31 +183,69 @@ app.get('/admin/logs',async(req,res)=>{
  const {data,error}=await supabase!.from('api_logs').select('*').order('created_at',{ascending:false}).limit(limit);
  if(error)return res.status(500).json({success:false,error:error.message});res.json({success:true,result:data});
 });
+app.get('/admin/modules',async(_req,res)=>{
+ const {data:registered,error}=await supabase!.from('api_endpoints').select('handler,is_active');
+ if(error)return res.status(500).json({success:false,error:error.message});
+ const registeredFiles=new Set((registered||[]).map(x=>x.handler));
+ res.json({success:true,result:availableModules.map(({handler,...mod})=>({...mod,registered:registeredFiles.has(mod.moduleFile)}))});
+});
 app.get('/admin/endpoints',async(_req,res)=>{
  const {data,error}=await supabase!.from('api_endpoints').select('*').order('created_at',{ascending:false});
- if(error)return res.status(500).json({success:false,error:error.message});res.json({success:true,result:[...allModules.map(({handler,...x})=>({...x,source:'code',is_active:true})),...(data||[])]});
+ if(error)return res.status(500).json({success:false,error:error.message});
+ const result=(data||[]).map(row=>({...row,source:availableModules.some(m=>m.moduleFile===row.handler&&m.path===row.path&&m.method===row.method)?'code':'missing-module'}));
+ res.json({success:true,result});
 });
 app.post('/admin/endpoints',async(req,res)=>{
- const {name,path,method,category,plan,description,handler,is_active=true}=req.body||{};
- if(!name||!/^\/api\/v1\/[a-z0-9/_-]+$/.test(path||'')||!['GET','POST','PUT','PATCH','DELETE'].includes(method)||!category||!['Free','Premium','Both'].includes(plan))
-  return res.status(400).json({success:false,error:'Check endpoint name, path, method, category and plan.'});
- if(allModules.some(x=>x.path===path))return res.status(409).json({success:false,error:'This path is already registered in code.'});
- const {data,error}=await supabase!.from('api_endpoints').insert({name,path,method,category,plan,description:description||'',handler:handler||'not_implemented',is_active}).select().single();
+ const {handler,plan,is_active=true}=req.body||{};
+ const mod=availableModules.find(x=>x.moduleFile===handler);
+ if(!mod)return res.status(400).json({success:false,code:'MODULE_NOT_FOUND',message:'Choose a JavaScript module that exists in backend/api on Railway.'});
+ if(!['Free','Premium','Both'].includes(plan))return res.status(400).json({success:false,error:'Access plan must be Free, Premium or Both.'});
+ const {count}=await supabase!.from('api_endpoints').select('id',{count:'exact',head:true}).eq('handler',handler);
+ if((count||0)>0)return res.status(409).json({success:false,code:'MODULE_ALREADY_REGISTERED',message:'This backend module has already been registered.'});
+ const payload={name:mod.name,path:mod.path,method:mod.method,category:mod.category,plan,description:mod.description||'',handler:mod.moduleFile,is_active:!!is_active};
+ const {data,error}=await supabase!.from('api_endpoints').insert(payload).select().single();
  if(error)return res.status(400).json({success:false,error:error.message});
- res.status(201).json({success:true,result:data,message:'Metadata saved. Add and deploy a trusted module in backend/src/modules before this endpoint can execute.'});
+ if(data.is_active)activeModules.set(`${mod.method}:${mod.path}`,{endpoint:mod,config:data});
+ await supabase!.from('admin_audit_logs').insert({admin_id:req.sessionUser!.id,action:'endpoint_registered',metadata:{endpoint_id:data.id,module:handler,path:mod.path}});
+ res.status(201).json({success:true,result:data,message:'Backend module registered and live. It is now available in API Docs.'});
 });
 app.patch('/admin/endpoints/:id',async(req,res)=>{
- const allowed=['name','description','category','plan','is_active'];const patch=Object.fromEntries(Object.entries(req.body||{}).filter(([k])=>allowed.includes(k)));
+ const allowed=['plan','is_active','description','category','name'];const patch=Object.fromEntries(Object.entries(req.body||{}).filter(([k])=>allowed.includes(k)));
  const {data,error}=await supabase!.from('api_endpoints').update(patch).eq('id',req.params.id).select().single();
- if(error)return res.status(400).json({success:false,error:error.message});res.json({success:true,result:data});
+ if(error)return res.status(400).json({success:false,error:error.message});
+ const mod=availableModules.find(x=>x.moduleFile===data.handler&&x.path===data.path&&x.method===data.method);
+ const key=`${data.method}:${data.path}`;
+ if(data.is_active&&mod)activeModules.set(key,{endpoint:mod,config:data});else activeModules.delete(key);
+ res.json({success:true,result:data});
 });
 app.delete('/admin/endpoints/:id',async(req,res)=>{
+ const {data}=await supabase!.from('api_endpoints').select('method,path').eq('id',req.params.id).maybeSingle();
  const {error}=await supabase!.from('api_endpoints').delete().eq('id',req.params.id);
- if(error)return res.status(400).json({success:false,error:error.message});res.json({success:true});
+ if(error)return res.status(400).json({success:false,error:error.message});
+ if(data)activeModules.delete(`${data.method}:${data.path}`);
+ res.json({success:true});
 });
+
 app.get('/admin/audit',async(_req,res)=>{
  const {data,error}=await supabase!.from('admin_audit_logs').select('*').order('created_at',{ascending:false}).limit(100);
  if(error)return res.status(500).json({success:false,error:error.message});res.json({success:true,result:data});
+});
+
+// Only owner-registered modules are executable. Unregistered files remain invisible and unreachable.
+app.all('/api/v1/*',limiter,(req,res,next)=>{
+  if(!activeModules.has(`${req.method}:${req.path}`))return res.status(404).json({success:false,code:'ENDPOINT_NOT_REGISTERED',message:'This endpoint has not been registered by the owner.'});
+  next();
+},authenticateApiKey,enforceQuota,async(req:Request,res:Response)=>{
+ const entry=activeModules.get(`${req.method}:${req.path}`)!;
+ const started=Date.now();const {endpoint,config}=entry;
+ try{
+  if(config.plan==='Premium'&&req.apiUser?.role!=='owner'&&req.apiUser?.plan!=='premium'){
+   res.status(403);
+   return res.json({success:false,code:'PREMIUM_REQUIRED',message:'This endpoint requires a Premium subscription.'});
+  }
+  await endpoint.handler(req,res);
+ }catch(err){console.error('endpoint failure',endpoint.path,err);if(!res.headersSent)res.status(500).json({success:false,code:'INTERNAL_ERROR'});}
+ finally{await writeUsage(req,res,started,endpoint.path).catch(e=>console.error('log write failed',e));}
 });
 
 app.use((err:any,_req:Request,res:Response,_next:any)=>{
@@ -212,4 +257,4 @@ app.use((err:any,_req:Request,res:Response,_next:any)=>{
 });
 
 const port=Number(process.env.PORT||4000);
-app.listen(port,'0.0.0.0',()=>console.log(`Roxy Main API listening on 0.0.0.0:${port}`));
+void refreshActiveModules().finally(()=>app.listen(port,'0.0.0.0',()=>console.log(`Roxy Main API listening on 0.0.0.0:${port}; ${activeModules.size} endpoint module(s) registered.`)));

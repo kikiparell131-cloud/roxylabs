@@ -4,7 +4,7 @@ import {useEffect,useState} from 'react';
 import {Activity,KeyRound,Clock3,BarChart3,ArrowRight,RefreshCw,AlertCircle} from 'lucide-react';
 import {getAccessToken,getSupabase} from '@/lib/supabase';
 const API=(process.env.NEXT_PUBLIC_API_URL||(process.env.NODE_ENV==='development'?'http://localhost:4000':'')).replace(/\/$/,'');
-type Overview={requestsToday:number;requestsMonth:number;remainingQuota:number;dailyLimit:number;successRate:number;activeKeys:number;plan:string;activity:{date:string;count:number}[]};
+type Overview={requestsToday:number;requestsMonth:number;remainingQuota:number|null;dailyLimit:number|null;successRate:number;activeKeys:number;plan:string;role:string;activity:{date:string;count:number}[]};
 export default function Dashboard(){
  const [data,setData]=useState<Overview|null>(null);const [logs,setLogs]=useState<any[]>([]);const [busy,setBusy]=useState(true);const [error,setError]=useState('');
  async function load(){
@@ -31,7 +31,7 @@ export default function Dashboard(){
  }
  useEffect(()=>{void load();},[]);
  const max=Math.max(1,...(data?.activity||[]).map(x=>x.count));
- const cards=[{label:'Requests this month',value:data?.requestsMonth??'—',foot:'Recorded API calls',icon:Activity},{label:'Requests today',value:data?.requestsToday??'—',foot:`${data?.dailyLimit??'—'} daily limit`,icon:BarChart3},{label:'Remaining quota',value:data?.remainingQuota??'—',foot:`${data?.plan||'—'} plan`,icon:KeyRound},{label:'Success rate',value:data?`${data.successRate}%`:'—',foot:'Based on today’s responses',icon:Clock3}];
+ const cards=[{label:'Requests this month',value:data?.requestsMonth??'—',foot:'Recorded API calls',icon:Activity},{label:'Requests today',value:data?.requestsToday??'—',foot:data?.role==='owner'?'Unlimited owner access':`${data?.dailyLimit??'—'} daily limit`,icon:BarChart3},{label:'Remaining quota',value:data?.role==='owner'?'Unlimited':data?.remainingQuota??'—',foot:`${data?.role||data?.plan||'—'} role`,icon:KeyRound},{label:'Success rate',value:data?`${data.successRate}%`:'—',foot:'Based on today’s responses',icon:Clock3}];
  return <div className="content"><div className="eyebrow">YOUR WORKSPACE</div><div className="flex flex-wrap items-center justify-between gap-3"><h1 className="page-title">Good afternoon, developer ✨</h1><button className="btn btn-soft" onClick={load}><RefreshCw size={14}/> Refresh data</button></div><p className="sub">Your API workspace at a glance. Statistics below are loaded from your actual API logs.</p>
  <section className="hero" style={{marginTop:24}}><div style={{position:'relative',zIndex:1}}><div className="eyebrow" style={{color:'#cbd4ff'}}>WELCOME TO ROXY MAIN API</div><h2>Let&apos;s make something<br/>amazing today.</h2><p>Your APIs, usage and developer tools — all in one calm, simple workspace.</p><a className="btn" style={{background:'white',color:'#536bd0',marginTop:8}} href="/docs">Explore documentation <ArrowRight size={14}/></a></div><Image src="/roxy/roxy-cat.jpg" width={200} height={240} alt="Roxy mascot"/></section>
  {error&&<div className="card" style={{marginTop:20,color:'#b45309',display:'flex',gap:10}}><AlertCircle size={18}/><span>{error}</span></div>}

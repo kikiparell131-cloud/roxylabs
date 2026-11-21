@@ -15,13 +15,12 @@ This archive is the updated version of the project you uploaded. It preserves th
 
 ### Backend
 - Verifies Supabase access tokens for user/admin dashboard routes.
-- Admin routes require `profiles.is_admin = true`; no browser-side admin token.
+- Admin routes require the verified account role `owner`; Free and Premium accounts receive HTTP 403.
 - API keys are stored as SHA-256 hashes; raw keys are only returned at creation.
 - Premium expiry is checked server-side.
 - Daily quota reservation uses an atomic Postgres RPC to avoid parallel-request quota bypass.
 - API calls are logged with status and response time.
-- Endpoint modules can be written as individual JavaScript files in `backend/api/`, for example `backend/api/ai.js`. The service loads trusted `.js` modules from this folder on startup.
-- Admin-created endpoint entries are documentation metadata only. To make one executable, add a trusted module file and redeploy Railway. Arbitrary JavaScript uploaded from the public admin UI is deliberately not executed.
+- Endpoint modules are discovered from trusted JavaScript files in `backend/api/`, but the public API catalog stays empty until the owner registers a module from the web Admin Dashboard. Registration connects the selected file to its real API route and publishes it in Docs. Arbitrary JavaScript uploaded from the public browser is never executed.
 
 ## Local setup
 
@@ -47,17 +46,16 @@ This archive is the updated version of the project you uploaded. It preserves th
 - `SUPABASE_URL`
 - `SUPABASE_SERVICE_ROLE_KEY` — server-side only; never use a `NEXT_PUBLIC_` prefix
 
-## Make the first admin
+## Set the owner role
 
-After registering your account, copy its user UUID from Supabase Authentication → Users, then run this SQL in Supabase SQL Editor:
+Run `supabase/role_migration.sql` in the Supabase SQL Editor. Replace `YOUR_OWNER_EMAIL@example.com` with the email address of the account that should own the project, then run the final `UPDATE` statement. The role is stored in `profiles.role` and must be exactly `owner`. Do not grant owner through the web UI.
 
-```sql
-update public.profiles
-set is_admin = true
-where id = 'YOUR_AUTH_USER_UUID';
-```
+Roles:
+- `free`: standard user; no Admin Dashboard access.
+- `premium`: Premium API access; no Admin Dashboard access.
+- `owner`: full Admin Dashboard access, Premium endpoint access, and API quota bypass.
 
-The Admin Dashboard will then be authorized through your normal Supabase login session.
+The backend enforces owner-only access independently of whether the Admin link is visible in the frontend.
 
 ## Add a JavaScript API module (Railway)
 
@@ -108,3 +106,14 @@ A scraper starter is included as `backend/api/scraper.example.txt`; copy it to `
 - Payment gateway is intentionally not included. Premium activation remains manual through the WhatsApp link on Pricing; an admin can grant or revoke Premium in Admin Dashboard.
 - The AI, QR, and image-provider integrations still need their real provider logic. They return explicit `501` configuration responses rather than pretending to process a request.
 - This is a repaired application foundation, not a completed security audit. Before public launch, add monitoring/retention policies, provider timeouts, request validation per endpoint, and Redis-backed distributed rate limiting if running multiple Railway replicas.
+
+
+## Roles and endpoint publishing
+
+Roles are `free`, `premium`, and `owner`. Only `owner` can access `/admin/*`; the backend checks the verified Supabase user and the `profiles.role` value on every admin request. Free and Premium users receive HTTP 403 even if they manually enter `/admin`. The owner role is assigned manually in Supabase with `supabase/role_migration.sql`; the web dashboard cannot promote accounts to owner. Premium management can only switch ordinary accounts between Free and Premium.
+
+Run `supabase/role_migration.sql` once on an existing database, replace `YOUR_OWNER_EMAIL@example.com` with the owner's Supabase login email, and run the final update statement. Do not expose the Service Role key.
+
+The API catalog intentionally starts empty. JavaScript files placed in `backend/api/*.js` are discovered as available modules but are not public or executable until the owner opens Admin Dashboard → Endpoint Management → Add endpoint and registers the file. Registration writes its module reference to `api_endpoints`, activates its real backend handler immediately, and makes it appear in `/docs`. If a file is changed or added, redeploy the Railway backend; then register it in the web dashboard. Deleting/disabling the registration removes it from public docs and disables its route.
+
+Owner API keys bypass daily quota and can call Premium endpoints. Owner status is still required for all admin dashboard operations.

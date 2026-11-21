@@ -1,6 +1,7 @@
 create extension if not exists pgcrypto;
 do $$ begin create type public.account_plan as enum ('free','premium'); exception when duplicate_object then null; end $$;
 do $$ begin create type public.account_status as enum ('active','disabled'); exception when duplicate_object then null; end $$;
+-- Roles are mutually exclusive: free, premium, owner. Only a trusted owner can promote another account to owner via SQL.
 
 create table if not exists public.profiles (
  id uuid primary key references auth.users(id) on delete cascade,
@@ -8,11 +9,19 @@ create table if not exists public.profiles (
  plan public.account_plan not null default 'free',
  status public.account_status not null default 'active',
  is_admin boolean not null default false,
+ role text not null default 'free' check (role in ('free','premium','owner')),
  premium_expires_at timestamptz,
  custom_daily_limit integer check (custom_daily_limit is null or custom_daily_limit >= 0),
  created_at timestamptz not null default now()
 );
 alter table public.profiles add column if not exists is_admin boolean not null default false;
+alter table public.profiles add column if not exists role text not null default 'free';
+alter table public.profiles drop constraint if exists profiles_role_check;
+alter table public.profiles add constraint profiles_role_check check (role in ('free','premium','owner'));
+-- Migrate legacy admin and premium accounts into the new role model.
+update public.profiles set role='owner' where is_admin=true;
+update public.profiles set role='premium' where is_admin=false and plan='premium' and role='free';
+update public.profiles set role='free' where is_admin=false and plan='free' and role='premium';
 create table if not exists public.api_keys (
  id uuid primary key default gen_random_uuid(), user_id uuid not null references public.profiles(id) on delete cascade,
  key_hash text unique not null, key_prefix text not null, is_active boolean not null default true, created_at timestamptz not null default now(), last_used_at timestamptz
@@ -93,4 +102,4 @@ drop policy if exists "public read parameters" on public.api_parameters;
 create policy "public read parameters" on public.api_parameters for select using(true);
 drop policy if exists "public read examples" on public.api_examples;
 create policy "public read examples" on public.api_examples for select using(true);
--- Admin writes are exclusively performed by backend service-role routes after verified JWT + profiles.is_admin checks.
+-- Admin writes are exclusively performed by backend service-role routes after verified JWT + profiles.role = owner checks.
