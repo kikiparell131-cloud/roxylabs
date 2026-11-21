@@ -1,13 +1,24 @@
 /**
  * RoxyLabs - Pinterest Search
  *
- * Search public Pinterest pins by keyword.
- * Supports image/video filtering and configurable result limits.
+ * Endpoint:
+ * GET /api/v1/pinterest/search?q=elaina&limit=5&type=image
+ *
+ * Parameters:
+ * q     : Search keyword
+ * limit : Number of results (1-30)
+ * type  : all | image | video
+ *
+ * Returns:
+ * Pinterest search results with image/video previews,
+ * pin URLs, and media URLs.
  *
  * Note:
  * Pinterest public HTML is not a stable API.
- * Results depend on the data Pinterest makes available.
+ * Results depend on publicly available Pinterest data.
  */
+
+const https = require('node:https');
 
 const PINTEREST_URL = 'https://www.pinterest.com';
 
@@ -16,14 +27,18 @@ const USER_AGENT =
   'AppleWebKit/537.36 (KHTML, like Gecko) ' +
   'Chrome/131.0.0.0 Safari/537.36';
 
-function decodeHtml(value) {
+const IMAGE_EXTENSIONS = /\.(?:jpg|jpeg|png|webp|gif)(?:\?|$)/i;
+
+/**
+ * Decode common HTML and JSON escapes.
+ */
+function decodeText(value) {
   return String(value || '')
     .replace(/\\u002F/gi, '/')
     .replace(/\\u0026/gi, '&')
     .replace(/\\u003D/gi, '=')
     .replace(/\\u003A/gi, ':')
     .replace(/\\u0022/gi, '"')
-    .replace(/\\u0027/gi, "'")
     .replace(/\\\//g, '/')
     .replace(/&amp;/gi, '&')
     .replace(/&quot;/gi, '"')
@@ -31,10 +46,15 @@ function decodeHtml(value) {
     .replace(/&#x2F;/gi, '/');
 }
 
-function cleanString(value) {
-  if (typeof value !== 'string') return '';
+/**
+ * Clean text extracted from Pinterest HTML.
+ */
+function cleanText(value) {
+  if (typeof value !== 'string') {
+    return '';
+  }
 
-  return value
+  return decodeText(value)
     .replace(/\\u([0-9a-f]{4})/gi, (_, hex) =>
       String.fromCharCode(parseInt(hex, 16))
     )
@@ -46,10 +66,43 @@ function cleanString(value) {
     .trim();
 }
 
-function normalizeImageUrl(url) {
+/**
+ * Normalize Pinterest image URLs.
+ *
+ * Important:
+ * Pinterest HTML can contain CSS or other text after an image URL.
+ * This function stops at the actual image extension.
+ */
+function normalizeImageUrl(rawUrl) {
   try {
+    let url = decodeText(rawUrl)
+      .replace(/\\/g, '')
+      .trim();
+
+    // Remove accidental punctuation around the URL.
+    url = url.replace(/^[("'`]+/, '');
+
+    // Find the real image extension.
+    const extensionMatch = url.match(
+      /\.(?:jpg|jpeg|png|webp|gif)(?:\?[^"'<>\\\s]*)?/i
+    );
+
+    if (!extensionMatch) {
+      return null;
+    }
+
+    // Cut off anything after the image URL.
+    url = url.slice(
+      0,
+      extensionMatch.index + extensionMatch[0].length
+    );
+
+    // Remove trailing punctuation.
+    url = url.replace(/[),;]+$/, '');
+
     const parsed = new URL(url);
 
+    // Only accept Pinterest CDN media.
     if (
       parsed.hostname !== 'i.pinimg.com' &&
       !parsed.hostname.endsWith('.pinimg.com')
@@ -57,20 +110,29 @@ function normalizeImageUrl(url) {
       return null;
     }
 
+    // Verify that the pathname is an image.
+    if (!IMAGE_EXTENSIONS.test(parsed.pathname)) {
+      return null;
+    }
+
     parsed.hash = '';
 
-    // Use a consistent preview size.
+    // Prefer a consistent preview size.
     parsed.pathname = parsed.pathname.replace(
       /^\/(?:originals|736x|564x|474x|236x|170x)\//,
       '/564x/'
     );
 
     return parsed.toString();
+
   } catch {
     return null;
   }
 }
 
+/**
+ * Extract a Pinterest pin ID from a text fragment.
+ */
 function extractPinId(text) {
   const patterns = [
     /"pin_id"\s*:\s*"?(\\?\d{8,})"?/i,
@@ -82,18 +144,23 @@ function extractPinId(text) {
   for (const pattern of patterns) {
     const match = text.match(pattern);
 
-    if (match) {
-      const id = match[1].replace(/\\/g, '');
+    if (!match) {
+      continue;
+    }
 
-      if (/^\d{8,}$/.test(id)) {
-        return id;
-      }
+    const id = match[1].replace(/\\/g, '');
+
+    if (/^\d{8,}$/.test(id)) {
+      return id;
     }
   }
 
   return null;
 }
 
+/**
+ * Extract a title from nearby Pinterest data.
+ */
 function extractTitle(text, fallback) {
   const patterns = [
     /"grid_title"\s*:\s*"((?:\\.|[^"\\])*)"/i,
@@ -104,51 +171,70 @@ function extractTitle(text, fallback) {
   for (const pattern of patterns) {
     const match = text.match(pattern);
 
-    if (match) {
-      const title = cleanString(match[1]);
+    if (!match) {
+      continue;
+    }
 
-      if (title && title.length > 1) {
-        return title.slice(0, 220);
-      }
+    const title = cleanText(match[1]);
+
+    if (title && title.length > 1) {
+      return title.slice(0, 220);
     }
   }
 
   return fallback;
 }
 
-function extractImageCandidates(text) {
+/**
+ * Detect video references.
+ */
+function detectVideo(text) {
+  return (
+    /"videos"\s*:/i.test(text) ||
+    /"video"\s*:/i.test(text) ||
+    /\.mp4(?:\?|["\\])/i.test(text)
+  );
+}
+
+/**
+ * Extract all usable Pinterest images from HTML.
+ *
+ * Unlike the previous parser, this function:
+ * - Stops image URLs at the real extension.
+ * - Removes invalid CSS suffixes.
+ * - Deduplicates image URLs.
+ * - Collects multiple image candidates.
+ */
+function extractImageCandidates(html, query) {
+  const text = decodeText(html);
+
   const results = [];
   const seen = new Set();
 
-  // Match Pinterest CDN URLs, including escaped JSON URLs.
   const imageRegex =
     /https?:\\?\/\\?\/i\.pinimg\.com\/[^\s"'<>\\]+/gi;
 
   let match;
 
   while ((match = imageRegex.exec(text)) !== null) {
-    let rawUrl = match[0]
-      .replace(/\\u003[dD]/g, '=')
-      .replace(/\\u0026/g, '&')
-      .replace(/\\\//g, '/')
-      .replace(/\\/g, '');
+    const image = normalizeImageUrl(match[0]);
 
-    rawUrl = rawUrl.replace(/[),;]+$/, '');
+    if (!image) {
+      continue;
+    }
 
-    // Remove common JSON escaping.
-    rawUrl = rawUrl.replace(/&amp;/gi, '&');
-
-    const image = normalizeImageUrl(rawUrl);
-
-    if (!image || seen.has(image)) continue;
+    if (seen.has(image)) {
+      continue;
+    }
 
     seen.add(image);
 
     // Read nearby data for title and pin ID.
-    const start = Math.max(0, match.index - 12000);
+    const start = Math.max(0, match.index - 3000);
+
     const end = Math.min(
       text.length,
-      match.index + match[0].length + 12000
+      match.index + match[0].length + 3000
     );
 
     const nearby = text.slice(start, end);
@@ -157,26 +243,82 @@ function extractImageCandidates(text) {
 
     const title = extractTitle(
       nearby,
-      'Pinterest Image'
+      query || 'Pinterest Image'
     );
 
-    const isVideo =
-      /"videos"\s*:/i.test(nearby) ||
-      /"video"\s*:/i.test(nearby) ||
-      /\.mp4(?:\?|["\\])/i.test(nearby);
+    const isVideo = detectVideo(nearby);
 
     results.push({
       title,
+
       image,
+
       pin_url: pinId
         ? `${PINTEREST_URL}/pin/${pinId}/`
         : null,
-      media_type: isVideo ? 'video' : 'image',
+
+      media_type: isVideo
+        ? 'video'
+        : 'image',
+
       pin_id: pinId
     });
   }
 
   return results;
+}
+
+/**
+ * Remove duplicate pins.
+ *
+ * Prefer pin ID when available.
+ * Otherwise use the normalized image URL.
+ */
+function deduplicateResults(results) {
+  const unique = new Map();
+
+  for (const item of results) {
+    const key = item.pin_id || item.image;
+
+    if (!unique.has(key)) {
+      unique.set(key, item);
+    }
+  }
+
+  return Array.from(unique.values());
+}
+
+/**
+ * Request Pinterest search page.
+ */
+async function fetchPinterestSearch(query, signal) {
+  const target = new URL(
+    '/search/pins/',
+    PINTEREST_URL
+  );
+
+  target.searchParams.set('q', query);
+
+  const response = await fetch(target.toString(), {
+    method: 'GET',
+
+    redirect: 'follow',
+
+    signal,
+
+    headers: {
+      'user-agent': USER_AGENT,
+
+      accept:
+        'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+
+      'accept-language': 'en-US,en;q=0.9',
+
+      'cache-control': 'no-cache'
+    }
+  });
+
+  return response;
 }
 
 module.exports = {
@@ -188,10 +330,10 @@ module.exports = {
 
   category: 'Search',
 
-  plan: 'Free',
+  plan: 'Both',
 
   description:
-    'Search public Pinterest pins by keyword with image/video previews.',
+    'Search public Pinterest pins by keyword with image/video previews and direct pin links.',
 
   async execute(req, res) {
     const query =
@@ -213,27 +355,44 @@ module.exports = {
         ? req.query.type.toLowerCase()
         : 'all';
 
+    // Validate keyword.
     if (!query) {
       return res.status(400).json({
         success: false,
+
         code: 'QUERY_REQUIRED',
-        message: 'Provide a search keyword using q.'
+
+        message:
+          'Provide a search keyword using q.',
+
+        api: 'roxylabs'
       });
     }
 
     if (query.length > 100) {
       return res.status(400).json({
         success: false,
+
         code: 'QUERY_TOO_LONG',
-        message: 'Search keyword must be 100 characters or fewer.'
+
+        message:
+          'Search keyword must be 100 characters or fewer.',
+
+        api: 'roxylabs'
       });
     }
 
+    // Validate media type.
     if (!['all', 'image', 'video'].includes(type)) {
       return res.status(400).json({
         success: false,
+
         code: 'INVALID_TYPE',
-        message: 'type must be all, image, or video.'
+
+        message:
+          'type must be all, image, or video.',
+
+        api: 'roxylabs'
       });
     }
 
@@ -245,35 +404,22 @@ module.exports = {
     );
 
     try {
-      const target = new URL(
-        '/search/pins/',
-        PINTEREST_URL
+      const response = await fetchPinterestSearch(
+        query,
+        controller.signal
       );
 
-      target.searchParams.set('q', query);
-
-      const response = await fetch(target.toString(), {
-        method: 'GET',
-        redirect: 'follow',
-        signal: controller.signal,
-
-        headers: {
-          'user-agent': USER_AGENT,
-
-          accept:
-            'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-
-          'accept-language': 'en-US,en;q=0.9',
-
-          'cache-control': 'no-cache'
-        }
-      });
-
+      // Handle provider errors.
       if (!response.ok) {
         return res.status(502).json({
           success: false,
+
           code: 'PROVIDER_ERROR',
-          message: `Pinterest returned HTTP ${response.status}.`
+
+          message:
+            `Pinterest returned HTTP ${response.status}.`,
+
+          api: 'roxylabs'
         });
       }
 
@@ -282,16 +428,23 @@ module.exports = {
       if (!html || html.length < 100) {
         return res.status(502).json({
           success: false,
+
           code: 'EMPTY_PROVIDER_RESPONSE',
-          message: 'Pinterest returned an empty response.'
+
+          message:
+            'Pinterest returned an empty response.',
+
+          api: 'roxylabs'
         });
       }
 
-      const text = decodeHtml(html);
+      // Extract all image candidates first.
+      const candidates = extractImageCandidates(
+        html,
+        query
+      );
 
-      const candidates = extractImageCandidates(text);
-
-      // Filter by requested media type.
+      // Filter media type.
       let filtered = candidates;
 
       if (type === 'image') {
@@ -306,24 +459,19 @@ module.exports = {
         );
       }
 
-      // Avoid returning multiple sizes of the same pin.
-      const uniquePins = new Map();
+      // Remove duplicates.
+      const uniqueResults = deduplicateResults(
+        filtered
+      );
 
-      for (const item of filtered) {
-        const key = item.pin_id || item.image;
+      // Apply requested limit.
+      const results = uniqueResults.slice(0, limit);
 
-        if (!uniquePins.has(key)) {
-          uniquePins.set(key, item);
-        }
-      }
-
-      const results = Array.from(
-        uniquePins.values()
-      ).slice(0, limit);
-
+      // No results.
       if (!results.length) {
         return res.status(422).json({
           success: false,
+
           code: 'NO_RESULTS',
 
           message:
@@ -331,12 +479,16 @@ module.exports = {
             'Pinterest may have blocked the request or changed its page format.',
 
           query,
+
           requested: limit,
+
           type,
+
           api: 'roxylabs'
         });
       }
 
+      // Successful response.
       return res.json({
         success: true,
 
@@ -374,7 +526,9 @@ module.exports = {
 
       console.error(
         '[PinSearch]',
-        timedOut ? 'Request timed out.' : error
+        timedOut
+          ? 'Request timed out.'
+          : error
       );
 
       return res.status(timedOut ? 504 : 502).json({
