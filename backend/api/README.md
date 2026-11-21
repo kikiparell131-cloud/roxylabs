@@ -33,10 +33,10 @@ Searches YouTube by song title or artist and returns JSON metadata (title, video
 
 It returns two usable forms:
 
-- `result.gallery`: a single Android Motion Photo 1.0 `.MP.jpg` file containing a JPEG still, appended H.264/AAC MP4, and XMP container metadata. Use `gallery.data` (Base64) or `gallery.dataUrl` to save the moving photo to a compatible Android gallery/photo app.
+- `result.gallery`: a single `.MP.jpg` Motion Photo container containing a JPEG still, appended H.264/AAC MP4, current GContainer XMP directory metadata, and legacy Google Camera `MicroVideoOffset` metadata for wider gallery compatibility. Use `gallery.data` (Base64) or `gallery.dataUrl` to save the complete moving-photo file. The browser preview displays only the still frame; the appended MP4 is inside the downloaded file. Gallery recognition depends on the Android gallery app/device.
 - `result.whatsapp`: separate JPEG and MP4 components plus Baileys pairing values (`imagePairedMediaType: 5`, `videoPairedMediaType: 6`, `associationType: 12`). A WhatsApp bot uploads these components through Baileys and relays the paired messages; the API itself does not send WhatsApp messages.
 
-The `result.image` is only a still preview. Download `result.gallery`, not `result.image`, when you want the moving Motion Photo file.
+The `result.image` is only a still preview. Download `result.gallery`, not `result.image`, when you want the moving Motion Photo file. For WhatsApp, use `result.whatsapp.image` and `result.whatsapp.video` as two media uploads and relay them using the same Baileys message-association sequence as the original bot module.
 
 Example:
 

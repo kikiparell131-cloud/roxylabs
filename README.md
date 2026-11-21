@@ -124,3 +124,8 @@ Owner API keys bypass daily quota and can call Premium endpoints. Owner status i
 - API Docs has a **Copy JSON** action for response payloads.
 - Added `backend/api/pindl.js` for public Pinterest pin page metadata and available image/video URLs. Register it in the owner dashboard after deploying the backend. Pinterest may restrict media metadata; this module does not guarantee a downloadable original file for every pin.
 - Redeploy backend and frontend after pushing the changes. Existing registered endpoint rows keep their current category/name; adjust them in Supabase or re-register after deleting the old row if you want to rename existing entries.
+
+
+## FotoLive API update
+
+`POST /api/v1/fotolive` now builds the gallery file as a JPEG+MP4 Motion Photo container. Its XMP includes both the GContainer directory and legacy Google Camera MicroVideoOffset metadata. The response also contains separate JPEG/MP4 media and the Baileys pairing fields needed by a WhatsApp bot. The browser preview is expected to look like a still image; download the complete `.MP.jpg` file to retain motion. Gallery compatibility varies by Android gallery app/device. See `backend/api/README.md`.

@@ -60,29 +60,55 @@ async function extractFirstFrame(mp4Path, jpgPath) {
 // The primary item length is intentionally 0 (allowed by the spec); the MP4
 // item length points to the appended video at the end of the container.
 function makeMotionPhoto(jpeg, mp4) {
-  if (jpeg[0] !== 0xff || jpeg[1] !== 0xd8) throw new Error('INVALID_JPEG_FRAME');
+  if (!Buffer.isBuffer(jpeg) || jpeg[0] !== 0xff || jpeg[1] !== 0xd8) {
+    throw new Error('INVALID_JPEG_FRAME');
+  }
+  if (!Buffer.isBuffer(mp4) || mp4.length < 16 || mp4.toString('ascii', 4, 8) !== 'ftyp') {
+    throw new Error('INVALID_MP4_MOTION_VIDEO');
+  }
+
+  // Include both the current GContainer directory and the legacy Google
+  // Camera MicroVideoOffset tag. Many gallery implementations still rely on
+  // the legacy tag to locate the MP4 appended after JPEG's EOI marker.
   const xmp = `<?xpacket begin="\uFEFF" id="W5M0MpCehiHzreSzNTczkc9d"?>` +
     `<x:xmpmeta xmlns:x="adobe:ns:meta/">` +
     `<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">` +
-    `<rdf:Description rdf:about="" xmlns:Camera="http://ns.google.com/photos/1.0/camera/" ` +
+    `<rdf:Description rdf:about="" ` +
+    `xmlns:Camera="http://ns.google.com/photos/1.0/camera/" ` +
+    `xmlns:GCamera="http://ns.google.com/photos/1.0/camera/" ` +
     `xmlns:Container="http://ns.google.com/photos/1.0/container/" ` +
     `xmlns:Item="http://ns.google.com/photos/1.0/container/item/" ` +
     `Camera:MotionPhoto="1" Camera:MotionPhotoVersion="1" ` +
-    `Camera:MotionPhotoPresentationTimestampUs="-1">` +
+    `Camera:MotionPhotoPresentationTimestampUs="0" ` +
+    `GCamera:MicroVideo="1" GCamera:MicroVideoVersion="1" ` +
+    `GCamera:MicroVideoOffset="${mp4.length}">` +
     `<Container:Directory><rdf:Seq>` +
-    `<rdf:li rdf:parseType="Resource" Item:Mime="image/jpeg" Item:Semantic="Primary" Item:Length="0"/>` +
-    `<rdf:li rdf:parseType="Resource" Item:Mime="video/mp4" Item:Semantic="MotionPhoto" Item:Length="${mp4.length}"/>` +
+    `<rdf:li rdf:parseType="Resource"><Container:Item ` +
+    `Item:Mime="image/jpeg" Item:Semantic="Primary" Item:Length="0"/>` +
+    `</rdf:li>` +
+    `<rdf:li rdf:parseType="Resource"><Container:Item ` +
+    `Item:Mime="video/mp4" Item:Semantic="MotionPhoto" Item:Length="${mp4.length}"/>` +
+    `</rdf:li>` +
     `</rdf:Seq></Container:Directory></rdf:Description></rdf:RDF></x:xmpmeta>` +
     `<?xpacket end="w"?>`;
+
   const xmpHeader = Buffer.from('http://ns.adobe.com/xap/1.0/\0', 'ascii');
   const xml = Buffer.from(xmp, 'utf8');
   const payload = Buffer.concat([xmpHeader, xml]);
   const segmentLength = payload.length + 2;
   if (segmentLength > 0xffff) throw new Error('XMP_TOO_LARGE');
+
   const app1 = Buffer.alloc(4);
-  app1[0] = 0xff; app1[1] = 0xe1;
+  app1[0] = 0xff;
+  app1[1] = 0xe1;
   app1.writeUInt16BE(segmentLength, 2);
-  const jpegWithXmp = Buffer.concat([jpeg.subarray(0, 2), app1, payload, jpeg.subarray(2)]);
+
+  // XMP must be embedded inside the JPEG header (before image scan data).
+  // Appending the MP4 after the JPEG EOI keeps the still photo readable while
+  // exposing the motion-video tail to Motion Photo-aware gallery applications.
+  const jpegWithXmp = Buffer.concat([
+    jpeg.subarray(0, 2), app1, payload, jpeg.subarray(2)
+  ]);
   return Buffer.concat([jpegWithXmp, mp4]);
 }
 
@@ -133,7 +159,8 @@ module.exports = {
           source: 'Roxy FotoLive Converter',
           result: {
             id,
-            format: 'android-motion-photo-1.0',
+            format: 'android-motion-photo-gcontainer-plus-gcamera-legacy',
+            verifiedContainer: { jpegHeader: true, xmpEmbedded: true, mp4Appended: true, mp4Bytes: motion.length },
             gallery: {
               fileName: downloadName,
               mimeType: 'image/jpeg',
@@ -142,7 +169,7 @@ module.exports = {
               data: motionPhotoBase64,
               dataUrl: `data:image/jpeg;base64,${motionPhotoBase64}`,
               sizeBytes: motionPhoto.length,
-              contains: ['JPEG still image', 'H.264/AAC MP4 motion video', 'Android Motion Photo XMP metadata']
+              contains: ['JPEG still image', 'H.264/AAC MP4 appended after JPEG EOI', 'GContainer MotionPhoto XMP directory', 'Legacy GCamera MicroVideoOffset metadata']
             },
             image: {
               mimeType: 'image/jpeg', encoding: 'base64', data: imageBase64,
@@ -167,7 +194,7 @@ module.exports = {
               sizeLimitBytes: MAX_VIDEO_BYTES
             }
           },
-          note: 'gallery.data is one Android Motion Photo file. whatsapp contains separate media components and pairing metadata for a Baileys bot.'
+          note: 'gallery.data is one JPEG+MP4 Motion Photo container. A browser preview shows only the still frame; download the complete .MP.jpg file and open it with a Motion Photo-compatible gallery. whatsapp contains the two separate media components and pairing metadata for a Baileys bot.'
         });
       } catch (err) {
         console.error('[FOTOLIVE]', err);
