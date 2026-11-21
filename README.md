@@ -1,100 +1,62 @@
-# Roxy Main API — existing project, repaired
+# Roxy Main API v1.0.1 — fixes for original project
 
-This archive is the updated version of the project you uploaded. It preserves the existing `roxy-main-api` structure, Roxy assets, blue/lavender visual direction, and the original Vercel + Railway + Supabase deployment model.
+This patch keeps the original Roxy Main API project structure and visual assets. It fixes the Railway root route, CORS diagnostics, Supabase backend configuration checks, live dashboard analytics, and API docs backend URL handling.
 
-## What was repaired
+## Important: two different Supabase keys
 
-### Frontend
-- Dashboard metrics and seven-day chart now load from backend database queries; removed the hard-coded sample statistics.
-- Recent API requests are shown from real API logs.
-- Documentation fetches the registered backend endpoints and uses a redesigned responsive endpoint explorer + request playground.
-- Playground sends real requests and displays the actual HTTP status, latency, and JSON response.
-- Login and registration are connected to Supabase Auth.
-- Profile loads the real account, creates API keys (raw key is shown only once), and allows key revocation.
-- Admin UI uses the signed-in Supabase session and exposes live user, premium, endpoint metadata, and API-log management.
-
-### Backend
-- Verifies Supabase access tokens for user/admin dashboard routes.
-- Admin routes require `profiles.is_admin = true`; no browser-side admin token.
-- API keys are stored as SHA-256 hashes; raw keys are only returned at creation.
-- Premium expiry is checked server-side.
-- Daily quota reservation uses an atomic Postgres RPC to avoid parallel-request quota bypass.
-- API calls are logged with status and response time.
-- Endpoint modules can be written as individual JavaScript files in `backend/api/`, for example `backend/api/ai.js`. The service loads trusted `.js` modules from this folder on startup.
-- Admin-created endpoint entries are documentation metadata only. To make one executable, add a trusted module file and redeploy Railway. Arbitrary JavaScript uploaded from the public admin UI is deliberately not executed.
-
-## Local setup
-
-1. Use Node.js 20+ and npm.
-2. Copy root `.env.example` values into `frontend/.env.local` and `backend/.env`.
-3. Create a Supabase project and run `supabase/schema.sql` in the Supabase SQL Editor.
-4. Enable Email + Password in Supabase Authentication. Configure the site URL and redirect URLs for localhost and your deployed Vercel domain.
-5. Install from the repository root: `npm install`.
-6. Start both services: `npm run dev`.
-7. Frontend: `http://localhost:3000`; backend health: `http://localhost:4000/health`.
-
-## Environment variables
-
-### Frontend — Vercel / `frontend/.env.local`
-- `NEXT_PUBLIC_API_URL` — public Railway backend URL, e.g. `https://your-api.up.railway.app`
+**Vercel (frontend):**
 - `NEXT_PUBLIC_SUPABASE_URL`
-- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
-- `NEXT_PUBLIC_ADMIN_WHATSAPP` — admin number in international digits, without `+`
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY` (publishable/anon key)
+- `NEXT_PUBLIC_API_URL` = the Railway backend origin, e.g. `https://your-service.up.railway.app` (no `/health`, no trailing slash)
 
-### Backend — Railway / `backend/.env`
-- `PORT` — Railway supplies this automatically; local default is `4000`
-- `CORS_ORIGINS` — comma-separated frontend origins
+**Railway (backend):**
 - `SUPABASE_URL`
-- `SUPABASE_SERVICE_ROLE_KEY` — server-side only; never use a `NEXT_PUBLIC_` prefix
+- `SUPABASE_SERVICE_ROLE_KEY` = Supabase Project Settings → API → `service_role` secret. The backend uses this key for secure server-side reads/writes. The anon key alone is NOT sufficient for this backend configuration.
+- `CORS_ORIGINS` = exact Vercel origin, e.g. `https://roxy-labs-two.vercel.app`, plus localhost if needed. No route path and no trailing slash.
+- `PORT` is provided by Railway; code falls back to 4000 for local use.
 
-## Make the first admin
+Never put `SUPABASE_SERVICE_ROLE_KEY` or `ADMIN_BOOTSTRAP_TOKEN` in Vercel `NEXT_PUBLIC_*` variables or frontend code. Redeploy Railway after changing Railway variables, and redeploy Vercel after changing Vercel variables.
 
-After registering your account, copy its user UUID from Supabase Authentication → Users, then run this SQL in Supabase SQL Editor:
+## Deploy the backend on Railway
+1. Open the existing Railway backend service.
+2. Set **Root Directory** to `/backend` if deploying this monorepo as a service from its root. If Railway is configured to deploy from the repository root, set the build command to `npm install && npm run build -w backend` and start command to `npm run start -w backend`.
+3. Set the Railway variables listed above.
+4. Redeploy. Opening the Railway domain `/` now returns service JSON instead of `Cannot GET /`.
+5. Check `https://YOUR-RAILWAY-SERVICE.up.railway.app/health`. The JSON should show `status: online` and `database: configured`.
+
+## Deploy the frontend on Vercel
+1. Set Root Directory to `frontend`.
+2. Add `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_SUPABASE_URL`, and `NEXT_PUBLIC_SUPABASE_ANON_KEY`.
+3. Add the exact Vercel domain to Railway `CORS_ORIGINS`.
+4. Redeploy Vercel and Railway if their environment variables changed.
+
+## Supabase setup
+Run `supabase/schema.sql` in the Supabase SQL Editor. The SQL includes the original tables and the atomic daily-usage RPC required by this patch. For an existing project, apply the new function below separately if you do not want to rerun the full schema:
 
 ```sql
-update public.profiles
-set is_admin = true
-where id = 'YOUR_AUTH_USER_UUID';
+create or replace function public.increment_api_usage(p_user_id uuid, p_usage_date date)
+returns void language sql security definer set search_path = public as $$
+  insert into public.api_usage_daily(user_id, usage_date, request_count)
+  values (p_user_id, p_usage_date, 1)
+  on conflict (user_id, usage_date)
+  do update set request_count = public.api_usage_daily.request_count + 1;
+$$;
+revoke all on function public.increment_api_usage(uuid, date) from public, anon, authenticated;
+grant execute on function public.increment_api_usage(uuid, date) to service_role;
 ```
 
-The Admin Dashboard will then be authorized through your normal Supabase login session.
+## What the errors mean
+- `Cannot GET /` on the Railway domain meant Express had no `/` route. This patch adds one; `/health` remains the health check.
+- `TypeError: Failed to fetch` in the browser is usually a wrong `NEXT_PUBLIC_API_URL`, Railway service not running, or CORS origin mismatch. `/health` and the docs status badge help isolate it.
+- Supplying only Supabase URL + anon key to Railway leaves this backend's `supabase` client unset. Add `SUPABASE_SERVICE_ROLE_KEY` in Railway. Keep the anon key on Vercel only.
+- If `/health` reports `database: configured` but dashboard says `ANALYTICS_QUERY_FAILED`, run the matching `supabase/schema.sql` and verify `api_logs` exists.
 
-## Add a JavaScript API module (Railway)
+## Live dashboard and endpoints
+- `/public/overview` returns actual counts from `api_logs` (month, today, success rate, seven-day activity). No fabricated numbers are used.
+- `/api/v1/endpoints` returns the built-in endpoint catalogue and merges active endpoint metadata from Supabase.
+- `/api/v1/ai/chat` remains a safe echo demo and is not connected to a real LLM provider yet.
+- `/api/v1/text/encode` is functional.
+- QR and image endpoints return 501 until their actual providers/handlers are configured.
 
-Create `backend/api/ai.js`:
-
-```js
-module.exports = {
-  name: 'AI Chat',
-  path: '/api/v1/ai/chat',
-  method: 'POST',
-  category: 'AI Tools',
-  plan: 'Premium',
-  description: 'AI chat endpoint',
-  async execute(req, res) {
-    const { message } = req.body || {};
-    if (typeof message !== 'string' || !message.trim()) {
-      return res.status(400).json({ success: false, code: 'MESSAGE_REQUIRED' });
-    }
-
-    // Call your chosen provider here. Keep API secrets in Railway variables.
-    return res.json({ success: true, result: { message: 'Provider integration goes here' } });
-  }
-};
-```
-
-The backend loads `.js` modules in `backend/api/` when the Railway service starts. Give each module a unique `path`. Supported methods: GET, POST, PUT, PATCH, DELETE. Commit and redeploy to Railway after adding or changing code.
-
-A scraper starter is included as `backend/api/scraper.example.txt`; copy it to `backend/api/scraper.js` after implementing it. Scrapers must defend against SSRF (block loopback/private/link-local destinations), use destination allowlists, and enforce timeouts and response-size limits.
-
-## Deploy
-
-- **Vercel:** import the same repository, set Root Directory to `frontend`, and add the frontend environment variables.
-- **Railway:** deploy the same repository, set Root Directory to `backend`, and add the backend environment variables. The service health check is `/health`.
-- **Supabase:** apply `supabase/schema.sql` and promote your admin user as described above.
-
-## Important
-
-- Payment gateway is intentionally not included. Premium activation remains manual through the WhatsApp link on Pricing; an admin can grant or revoke Premium in Admin Dashboard.
-- The AI, QR, and image-provider integrations still need their real provider logic. They return explicit `501` configuration responses rather than pretending to process a request.
-- This is a repaired application foundation, not a completed security audit. Before public launch, add monitoring/retention policies, provider timeouts, request validation per endpoint, and Redis-backed distributed rate limiting if running multiple Railway replicas.
+## Security notes
+The original admin bootstrap-token route remains temporary scaffolding. Do not expose its token in frontend variables. Before public launch, replace it with verified Supabase JWT + server-side admin-role authorization. Add atomic quota reservation (the current request pre-check is not a complete concurrency-safe quota gate), request schema validation, provider timeouts, log retention/redaction, and a production security review.
