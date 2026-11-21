@@ -4,9 +4,9 @@ import Image from 'next/image';
 import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import {getAccessToken} from '@/lib/supabase';
-import { LayoutDashboard,BookOpen, Gem,Info,UserRound,Shield,Menu,X,Activity,MessageSquareQuote } from 'lucide-react';
+import { LayoutDashboard,BookOpen, Gem,Info,UserRound,Shield,Menu,X,Activity } from 'lucide-react';
 const API=(process.env.NEXT_PUBLIC_API_URL||(process.env.NODE_ENV==='development'?'http://localhost:4000':'')).replace(/\/$/,'');
-const links=[{href:'/dashboard',label:'Dashboard',icon:LayoutDashboard},{href:'/docs',label:'Docs Main API',icon:BookOpen},{href:'/quote',label:'iPhone Quote',icon:MessageSquareQuote},{href:'/pricing',label:'Pricing',icon:Gem},{href:'/about',label:'About Roxy',icon:Info},{href:'/profile',label:'Profile',icon:UserRound}];
+const links=[{href:'/dashboard',label:'Dashboard',icon:LayoutDashboard},{href:'/docs',label:'Docs Main API',icon:BookOpen},{href:'/pricing',label:'Pricing',icon:Gem},{href:'/about',label:'About Roxy',icon:Info},{href:'/profile',label:'Profile',icon:UserRound}];
 export function Shell({children}:{children:React.ReactNode}){
  const path=usePathname();const [open,setOpen]=useState(false);const [isOwner,setIsOwner]=useState(false);const [systemStatus,setSystemStatus]=useState<'checking'|'online'|'offline'>('checking');
  useEffect(()=>{
