@@ -1,11 +1,3 @@
-const { resolveMedia } = require('./lib/ytdlp');
-module.exports = {
-  name: 'SoundCloud Downloader', path: '/api/v1/downloader/soundcloud', method: 'GET', category: 'Downloader', plan: 'Both',
-  description: 'Mengambil metadata dan URL media dari SoundCloud. Parameter q berisi URL publik.',
-  async execute(req, res) {
-    const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
-    if (!q) return res.status(400).json({ success:false, code:'QUERY_REQUIRED', message:'Masukkan URL melalui parameter q.' });
-    try { const result = await resolveMedia(q, 'soundcloud'); return res.json({ success:true, platform:'soundcloud', result }); }
-    catch (error) { return res.status(error.status || 502).json({ success:false, code:error.code || 'PROVIDER_ERROR', message:error.message || 'Downloader gagal diproses.' }); }
-  }
-};
+const axios=require('axios');
+const BASE_API='https://host.optikl.ink/soundcloud';
+module.exports={name:'SoundCloud Search & Downloader',path:'/api/v1/downloader/soundcloud',method:'GET',category:'Downloader',plan:'Both',description:'Konversi fitur SoundCloud dari modul bot. q berisi kata kunci pencarian atau URL track; mode=download untuk meminta audio dari URL track.',async execute(req,res){const q=String(req.query.q||'').trim();if(!q)return res.status(400).json({success:false,code:'QUERY_REQUIRED',message:'Masukkan kata kunci atau URL SoundCloud melalui parameter q.'});try{if(/^https:\/\/(www\.)?soundcloud\.com\//i.test(q)){const {data}=await axios.get(`${BASE_API}/download`,{params:{url:q},timeout:25000,headers:{'User-Agent':'Mozilla/5.0'}});if(!data?.audio_url)return res.status(404).json({success:false,code:'AUDIO_NOT_FOUND',message:'Audio tidak ditemukan.'});return res.json({success:true,platform:'soundcloud',mode:'download',result:{title:data.title||'Unknown',author:data.author||'Unknown',audioUrl:data.audio_url}});}const limit=Math.max(1,Math.min(20,Number.parseInt(String(req.query.limit||'10'),10)||10));const {data}=await axios.get(`${BASE_API}/search`,{params:{query:q},timeout:20000,headers:{'User-Agent':'Mozilla/5.0'}});const result=(Array.isArray(data)?data:[]).slice(0,limit).map((t,i)=>({no:i+1,title:t.title||'Untitled',author:t.author?.name||'Unknown',url:t.url}));return res.json({success:true,platform:'soundcloud',mode:'search',query:q,total:result.length,result});}catch(e){return res.status(502).json({success:false,code:'PROVIDER_ERROR',message:e.message||'SoundCloud tidak dapat diproses.'});}}};
