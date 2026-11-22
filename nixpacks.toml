@@ -1,0 +1,9 @@
+[phases.setup]
+aptPkgs = ["python3", "python3-pip", "ffmpeg"]
+
+[phases.install]
+cmds = [
+  "npm install",
+  "python3 -m pip install --break-system-packages --no-cache-dir --upgrade --prefix=/usr/local yt-dlp",
+  "command -v yt-dlp && yt-dlp --version"
+]

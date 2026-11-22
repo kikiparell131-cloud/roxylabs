@@ -31,13 +31,42 @@ function validUrl(input, platform) {
 }
 function run(args, timeout = 90000) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.env.YTDLP_BIN || 'yt-dlp', args, { stdio: ['ignore','pipe','pipe'] });
-    let out = '', err = '', finished = false;
-    const timer = setTimeout(() => { finished = true; child.kill('SIGKILL'); reject(Object.assign(new Error('Provider timeout.'), { code: 'PROVIDER_TIMEOUT', status: 504 })); }, timeout);
-    child.stdout.on('data', b => { out += b; if (out.length > 5_000_000) child.kill('SIGKILL'); });
-    child.stderr.on('data', b => { err += b; if (err.length > 20000) err = err.slice(-20000); });
-    child.on('error', e => { clearTimeout(timer); reject(Object.assign(new Error('yt-dlp belum tersedia di server. Pasang yt-dlp terlebih dahulu.'), { code: 'YTDLP_NOT_INSTALLED', status: 503 })); });
-    child.on('close', code => { if (finished) return; clearTimeout(timer); if (code !== 0) return reject(Object.assign(new Error(err.trim().split('\n').slice(-2).join(' ') || 'Media tidak dapat diproses.'), { code: 'MEDIA_UNAVAILABLE', status: 422 })); resolve(out.trim()); });
+    let out = '', err = '', finished = false, settled = false, child;
+    const timer = setTimeout(() => {
+      finished = true;
+      if (child) child.kill('SIGKILL');
+      if (!settled) { settled = true; reject(Object.assign(new Error('Provider timeout.'), { code: 'PROVIDER_TIMEOUT', status: 504 })); }
+    }, timeout);
+
+    const finishError = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    };
+    const launch = (command, commandArgs, allowPythonFallback = false) => {
+      child = spawn(command, commandArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+      child.stdout.on('data', b => { out += b; if (out.length > 5_000_000 && child) child.kill('SIGKILL'); });
+      child.stderr.on('data', b => { err += b; if (err.length > 20000) err = err.slice(-20000); });
+      child.once('error', e => {
+        if (allowPythonFallback && e.code === 'ENOENT') {
+          // Some Railway images install yt-dlp as a Python module without exposing its console script on PATH.
+          launch('python3', ['-m', 'yt_dlp', ...args], false);
+          return;
+        }
+        finishError(Object.assign(new Error('yt-dlp belum tersedia. Pastikan yt-dlp terpasang pada image Railway (pip install yt-dlp).'), { code: 'YTDLP_NOT_INSTALLED', status: 503 }));
+      });
+      child.once('close', code => {
+        if (finished || settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (code !== 0) return reject(Object.assign(new Error(err.trim().split('\n').slice(-2).join(' ') || 'Media tidak dapat diproses.'), { code: 'MEDIA_UNAVAILABLE', status: 422 }));
+        resolve(out.trim());
+      });
+    };
+    const configured = process.env.YTDLP_BIN;
+    if (configured) launch(configured, args, false);
+    else launch('yt-dlp', args, true);
   });
 }
 async function resolveMedia(input, platform) {

@@ -43,3 +43,8 @@ Media URLs returned by third-party providers may expire. Provider availability a
 ## Runtime dependencies
 
 The backend uses `axios`, `cheerio`, `form-data`, `multer`, and the system `yt-dlp` executable. Railway Nixpacks installs `yt-dlp` and FFmpeg. The TikTok and Pindl modules are intentionally preserved unchanged in this update.
+
+
+### Railway / yt-dlp deployment
+
+The repository includes Nixpacks configuration at both the repository root and `backend/` so it works whether Railway builds from the monorepo root or the backend root directory. It installs Python, FFmpeg, and yt-dlp into `/usr/local`. The shared resolver also falls back to `python3 -m yt_dlp` if the `yt-dlp` executable is not on PATH.
