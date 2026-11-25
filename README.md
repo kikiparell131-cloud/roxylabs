@@ -124,3 +124,7 @@ Owner API keys bypass daily quota and can call Premium endpoints. Owner status i
 - API Docs has a **Copy JSON** action for response payloads.
 - Added `backend/api/pindl.js` for public Pinterest pin page metadata and available image/video URLs. Register it in the owner dashboard after deploying the backend. Pinterest may restrict media metadata; this module does not guarantee a downloadable original file for every pin.
 - Redeploy backend and frontend after pushing the changes. Existing registered endpoint rows keep their current category/name; adjust them in Supabase or re-register after deleting the old row if you want to rename existing entries.
+
+
+## Branded Roxy Play download links
+The Play API returns download URLs on `PLAY_PUBLIC_BASE_URL`, e.g. `https://roxylabs.vercel.app/roxy/play/<filename>.mp3`. Vercel's Next.js route streams the file through the Railway backend; the private Supabase URL is not returned. Configure `PLAY_PUBLIC_BASE_URL` in Railway and `ROXY_BACKEND_ORIGIN` in Vercel. See `backend/api/PLAY-SETUP.md`.
