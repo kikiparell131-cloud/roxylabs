@@ -289,7 +289,7 @@ app.get('/roxy/play/:filename', limiter, async (req, res) => {
     if(!res.write(Buffer.from(value)))await new Promise(resolve=>res.once('drain',resolve));
    }
    res.end();
-  }catch(streamError){res.destroy(streamError);}
+  }catch(streamError){res.destroy(streamError instanceof Error ? streamError : new Error(String(streamError)));}
  }catch(error:any){
   if(!res.headersSent)return res.status(504).json({success:false,code:'PLAY_STREAM_TIMEOUT'});
   res.destroy(error);
