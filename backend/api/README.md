@@ -1,50 +1,28 @@
-# Roxy API modules
+# JavaScript API modules
 
-Each top-level `.js` file in this directory is a CommonJS endpoint module discovered by `backend/src/server.ts`. Modules export `name`, `path`, `method`, `category`, `plan`, `description`, and `execute(req, res)`. The Roxy server handles API-key authentication, plan checks, quota enforcement, and usage logging before calling `execute`.
+Place one trusted CommonJS module per file in this folder, for example `ai.js` or `scraper.js`. Railway discovers these files at startup and automatically registers/publishes them.
 
-## Downloader endpoints
+Required exports:
+- `name`
+- `path` (must begin with `/api/v1/`)
+- `method` (`GET`, `POST`, `PUT`, `PATCH`, or `DELETE`)
+- `category`
+- `plan` (`Free`, `Premium`, or `Both`)
+- `description`
+- `execute(req, res)`
 
-All endpoints below are independent modules under the `Downloader` category. Most use `GET` with `q`.
+After adding/committing a `.js` module, redeploy Railway. On startup, the backend automatically discovers it, inserts its endpoint metadata into `api_endpoints`, activates its handler, and publishes it in the frontend `/docs` catalog. No manual registration step is needed. Existing endpoint settings (name, category, access plan, and disabled state) are preserved. To change those settings, use the Admin Dashboard. New files must still be trusted code committed to the backend repository; the browser dashboard does not execute arbitrary uploaded JavaScript.
 
-| Endpoint | Input | Implementation |
-|---|---|---|
-| `/api/v1/downloader/facebook` | `q=<Facebook URL>` | Converted from `raw/down-facebook.js` scraper |
-| `/api/v1/downloader/instagram` | `q=<Instagram URL>` | Converted from `raw/down-instagram.js` scraper |
-| `/api/v1/downloader/instagram/audio` | `q=<Instagram Reel URL>` | Converted from `raw/down-igmp3.js` |
-| `/api/v1/downloader/twitter` | `q=<X/Twitter URL>` | Converted from `raw/downloader-twitter.js` |
-| `/api/v1/downloader/threads` | `q=<Threads URL>` | Converted from `raw/down-threads.js` |
-| `/api/v1/downloader/terabox` | `q=<TeraBox URL>` | Converted from `raw/downloader-terabox.js` |
-| `/api/v1/downloader/mediafire` | `q=<MediaFire URL>` | Converted from `raw/down-mediafire.js` |
-| `/api/v1/downloader/sfile` | `q=<keyword or Sfile URL>` | Converted from `raw/down-sfile.js`; optional `page` |
-| `/api/v1/downloader/soundcloud` | `q=<keyword or SoundCloud URL>` | Converted from `raw/down-soundcloud.js`; optional `limit` |
-| `/api/v1/downloader/myinstants` | `q=<keyword>` | Converted from `raw/down-myinstants.js`; optional `slug` for detail |
-| `/api/v1/downloader/youtube` | `q=<YouTube URL>` | Uses shared yt-dlp resolver |
-| `/api/v1/downloader/youtube/mp3` | `q=<YouTube URL>` | Uses shared yt-dlp resolver, audio formats only |
-| `/api/v1/downloader/tiktok` | `q=<TikTok URL>` | Existing module intentionally unchanged |
-| `/api/v1/downloader/pinterest` | Existing module input | Existing module intentionally unchanged |
-| `/api/v1/downloader/gdrive` | `q=<public Google Drive URL>` | Uses shared yt-dlp resolver |
-| `/api/v1/downloader/bilibili` | `q=<public Bilibili URL>` | Uses shared yt-dlp resolver |
-| `/api/v1/downloader/reddit` | `q=<public Reddit URL>` | Uses shared yt-dlp resolver |
-| `/api/v1/downloader/likee` | `q=<public Likee URL>` | Uses shared yt-dlp resolver |
-| `/api/v1/downloader/tumblr` | `q=<public Tumblr URL>` | Uses shared yt-dlp resolver |
-| `/api/v1/downloader/vimeo` | `q=<public Vimeo URL>` | Uses shared yt-dlp resolver |
-| `/api/v1/downloader/twitch` | `q=<public Twitch URL>` | Uses shared yt-dlp resolver |
-| `/api/v1/downloader/snapchat` | `q=<public Snapchat URL>` | Uses shared yt-dlp resolver |
-| `/api/v1/downloader/dailymotion` | `q=<public Dailymotion URL>` | Uses shared yt-dlp resolver |
+Example module: `ai.js`. Do not upload arbitrary JavaScript through a public browser form; only trusted code committed and deployed to Railway is executable.
 
-## JSON response
+## Pinterest Search (`pinsearch.js`)
 
-Success: `{ "success": true, "api": "roxylabs", "platform": "...", "result": ... }`.
+GET `/api/v1/pinterest/search?q=elaina&limit=5&type=image`
 
-Errors: `{ "success": false, "api": "roxylabs", "code": "...", "message": "..." }`.
+Query parameters: `q` (required keyword), `limit` (1–30, default 10), and `type` (`all`, `image`, or `video`). The module extracts publicly exposed results from Pinterest's search page; Pinterest may rate-limit requests or change its markup, so results are not guaranteed. Media links can expire. Use only content you own or have permission to use.
 
-Media URLs returned by third-party providers may expire. Provider availability and support can change; no scraper can guarantee every public link will resolve at all times. Use only content you own or have permission to download. Private content and access controls are not bypassed.
+## YouTube Play Search (`play.js`)
 
-## Runtime dependencies
+GET `/api/v1/youtube/play?q=chase+atlantic&limit=5`
 
-The backend uses `axios`, `cheerio`, `form-data`, `multer`, and the system `yt-dlp` executable. Railway Nixpacks installs `yt-dlp` and FFmpeg. The TikTok and Pindl modules are intentionally preserved unchanged in this update.
-
-
-### Railway / yt-dlp deployment
-
-The repository includes Nixpacks configuration at both the repository root and `backend/` so it works whether Railway builds from the monorepo root or the backend root directory. It installs Python, FFmpeg, and yt-dlp into `/usr/local`. The shared resolver also falls back to `python3 -m yt_dlp` if the `yt-dlp` executable is not on PATH.
+Searches YouTube by song title or artist and returns JSON metadata (title, video URL, duration, views, author, thumbnail, and upload age). `q` is required; `limit` is 1–10 and defaults to 5. This endpoint returns official watch URLs, not an audio file.

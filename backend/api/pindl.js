@@ -4,15 +4,15 @@
  */
 module.exports = {
   name: 'Pinterest Downloader',
-  path: '/api/v1/downloader/pinterest',
-  method: 'GET',
-  category: 'Downloader',
+  path: '/api/v1/pinterest/download',
+  method: 'POST',
+  category: 'PinDL',
   plan: 'Both',
   description: 'Resolve a public Pinterest pin into available image/video media URLs and metadata.',
   async execute(req, res) {
-    const input = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+    const input = req.body && req.body.url;
     if (typeof input !== 'string' || !input.trim()) {
-      return res.status(400).json({ success: false, code: 'URL_REQUIRED', message: 'Masukkan URL Pinterest melalui parameter q.' });
+      return res.status(400).json({ success: false, code: 'URL_REQUIRED', message: 'Paste a Pinterest pin URL.' });
     }
     let url;
     try { url = new URL(input.trim()); } catch {
