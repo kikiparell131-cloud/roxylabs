@@ -71,8 +71,12 @@ module.exports = {
     if (!PUBLIC_BASE_URL) return res.status(503).json({ success: false, code: 'PLAY_PUBLIC_BASE_URL_NOT_CONFIGURED', message: 'Configure PLAY_PUBLIC_BASE_URL to your public Vercel domain.' });
 
     try {
+      // IMPORTANT: Play is strictly single-result. Never return a list or
+      // expose a limit/choice selector (5, 10, etc.). Select and process only
+      // the first matching video from yt-search.
       const search = await yts(query);
-      const video = search?.videos?.[0];
+      const singleResult = Array.isArray(search?.videos) ? search.videos.slice(0, 1) : [];
+      const video = singleResult[0] || null;
       if (!video) return res.status(404).json({ success: false, code: 'SONG_NOT_FOUND', message: 'No matching song was found.' });
 
       // Provider must return a direct audio URL for content the operator has

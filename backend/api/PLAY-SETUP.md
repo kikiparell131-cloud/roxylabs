@@ -4,6 +4,9 @@ Endpoint: `GET /api/v1/youtube/play?q=artist%20song`
 
 The API returns one best YouTube search result, asks the configured authorized audio provider for an audio URL, downloads that audio into a private Supabase Storage bucket, and returns a branded Vercel download URL valid for 30 minutes. Vercel proxies the download to Railway; the Supabase signed URL remains server-side.
 
+## Single-result behavior (fixed)
+The `q` parameter searches by song title/artist, but the API selects and processes exactly one match (`videos.slice(0, 1)`). The JSON response contains one singular `result` object, never a `results` array. There is no `limit=5`, `limit=10`, or choice selector.
+
 ## Custom Vercel download domain
 1. Set `PLAY_PUBLIC_BASE_URL=https://roxylabs.vercel.app` in Railway (replace with your actual Vercel domain).
 2. Set `ROXY_BACKEND_ORIGIN=https://roxy-backend-production.up.railway.app` in Vercel project environment variables.
